@@ -1,2595 +1,831 @@
-\# Product Requirements Document (PRD)
+# Product Requirements Document (PRD)
 
-  
+## Sistem Penghitungan Keluar-Masuk Orang + Pengenalan Wajah Berbasis Kamera, YOLO, Face Recognition, dan Jetson Nano
 
-\## Sistem Penghitungan Keluar-Masuk Orang Berbasis Kamera, YOLO, Face Recognition, dan Jetson Nano
+**Versi:** 2.0
+**Platform:** NVIDIA Jetson Nano Developer Kit 4GB (B01, 2× port CSI)
+**Kamera:** 2× IMX219-120 (CSI / MIPI)
+**Target OS:** JetPack / L4T R32.7.1
+**Python:** 3.6.9 (Jetson) / 3.9+ (pengembangan di laptop)
+**CUDA:** 10.2
+**Mode:** Edge AI / Offline-first
 
-  
+> Perubahan besar dari v1.0: dua kamera CSI (satu per arah), penghitungan memakai pita dua garis, pengenalan wajah sebagai identifikasi 1:N open-set, dua basis data (SQLite lokal + PostgreSQL kepegawaian), dataset `raw/` di-*shelve* dan diganti perekaman ulang IMX219, bagian privasi UU PDP, presensi kedinasan dipisah menjadi Fase 2.
 
-\*\*Versi:\*\* 1.0
+---
 
-\*\*Platform:\*\* NVIDIA Jetson Nano Developer Kit 4GB
+# 1. Ringkasan Produk
 
-\*\*Target OS:\*\* JetPack / L4T R32.7.1
+Sistem computer vision berbasis edge AI. Dua kamera memantau satu pintu gedung/ruangan untuk:
 
-\*\*Python:\*\* 3.6.9
+1. **Menghitung** jumlah orang yang masuk (`IN`) dan keluar (`OUT`) — fitur utama.
+2. **Mengenali identitas** orang yang lewat dan menautkannya ke `idpersonal` — lapisan pengaya di atas penghitungan.
 
-\*\*CUDA:\*\* 10.2
+Penghitungan dan pengenalan adalah dua lapisan terpisah. Pengenalan boleh gagal (menghasilkan `UNKNOWN`) tanpa merusak angka penghitungan.
 
-\*\*Mode:\*\* Edge AI / Offline-first
+Hasil yang dapat diturunkan sistem:
 
-  
+- siapa yang masuk dan keluar;
+- berapa kali seseorang masuk/keluar dalam sehari;
+- kapan setiap event terjadi;
+- siapa saja yang sedang berada di dalam (occupancy);
+- jumlah orang tak dikenal yang lewat.
 
-\---
+Contoh rekap:
 
-  
+| idpersonal | Nama  | Masuk | Keluar | Di Dalam |
+|---|---|---:|---:|---:|
+| a4f9… | Juris | 1 | 1 | Tidak |
+| c8b1… | Gusti | 2 | 2 | Tidak |
+| f22e… | Rizki | 1 | 0 | Ya |
 
-\# 1. Ringkasan Produk
+Seluruh proses inti (deteksi, tracking, recognition, counting, penyimpanan event) berjalan di Jetson Nano tanpa internet. Resolusi nama/informasi orang dari basis data kepegawaian bersifat opsional dan asinkron.
 
-  
+---
 
-Sistem merupakan aplikasi computer vision berbasis edge AI yang menggunakan kamera untuk memantau aktivitas keluar-masuk orang melalui sebuah pintu.
+# 2. Tujuan Produk
 
-  
+## 2.1 Tujuan Utama
 
-Sistem tidak hanya menghitung jumlah orang, tetapi juga melakukan identifikasi terhadap orang yang melewati pintu sehingga dapat menghasilkan histori:
+Sistem otomatis untuk menghitung dan mencatat aktivitas keluar-masuk individu melalui satu pintu menggunakan computer vision, dengan identitas orang terdaftar tertaut ke setiap event bila wajah berhasil dikenali.
 
-  
-
-\- siapa yang masuk,
-
-\- siapa yang keluar,
-
-\- berapa kali seseorang masuk,
-
-\- berapa kali seseorang keluar,
-
-\- kapan event terjadi,
-
-\- dan siapa saja yang sedang berada di dalam.
-
-  
-
-Contoh:
-
-  
-
-| Nama | Masuk | Keluar | Di Dalam |
-
-|---|---:|---:|---:|
-
-| Juris | 1 | 1 | Tidak |
-
-| Gusti | 2 | 2 | Tidak |
-
-| Rizki | 1 | 1 | Tidak |
-
-  
-
-Sistem dirancang untuk berjalan langsung pada NVIDIA Jetson Nano 4GB sehingga proses deteksi, tracking, dan face recognition dapat dilakukan di edge tanpa ketergantungan terhadap koneksi internet.
-
-  
-
-\---
-
-  
-
-\# 2. Tujuan Produk
-
-  
-
-\## 2.1 Tujuan Utama
-
-  
-
-Membangun sistem otomatis untuk menghitung dan mencatat aktivitas keluar-masuk individu melalui pintu menggunakan computer vision.
-
-  
-
-\## 2.2 Tujuan Teknis
-
-  
+## 2.2 Tujuan Teknis
 
 Sistem harus mampu:
 
-  
+1. menangkap video dari 2 kamera CSI secara bersamaan;
+2. mendeteksi orang/kepala pada frame;
+3. melakukan tracking antar-frame;
+4. mengenali identitas individu terdaftar (identifikasi 1:N), atau menandai `UNKNOWN`;
+5. mendeteksi crossing terhadap pita dua garis virtual;
+6. menentukan arah `IN` atau `OUT` dari urutan crossing;
+7. mencegah double counting (per track, per kamera, dan antar kamera);
+8. menyimpan event ke SQLite lokal beserta `idpersonal`/`UNKNOWN`, `camera_id`, dan timestamp sistem;
+9. menghasilkan rekap harian dan occupancy;
+10. mengambil nama/informasi orang dari PostgreSQL kepegawaian secara asinkron (tidak di jalur real-time);
+11. berjalan dalam anggaran sumber daya Jetson Nano 4GB.
+
+## 2.3 Motivasi
+
+Penghitungan saja dinilai kurang oleh pimpinan. Pengenalan wajah ditambahkan untuk:
+
+- mengurangi risiko kriminal (mengetahui siapa yang masuk, alarm bila orang tak dikenal menumpuk di luar jam kerja);
+- **potensi** presensi kedinasan (Fase 2, lihat §26).
+
+---
+
+# 3. Non-Goals
+
+Versi ini tidak bertujuan untuk:
+
+- surveillance area luas atau banyak pintu;
+- mengenali seluruh populasi tanpa registrasi;
+- menggantikan sistem keamanan profesional;
+- identifikasi dari wajah sangat kecil / tertutup sepenuhnya;
+- melatih atau fine-tune model face recognition (memakai model pretrained apa adanya, lihat §8.3);
+- cloud inference sebagai komponen utama;
+- penghitungan yang tahan gerombolan padat pada konfigurasi satu kamera per arah (lihat §12 untuk batasan);
+- presensi kedinasan pada rilis pertama (Fase 2).
+
+---
+
+# 4. Prinsip Arsitektur Utama
+
+```
+DETECTION ≠ TRACKING ≠ RECOGNITION ≠ COUNTING
+```
+
+| Modul | Pertanyaan yang dijawab |
+|---|---|
+| YOLO | "Di mana orangnya?" |
+| Tracker (ByteTrack) | "Apakah ini orang yang sama antar-frame?" |
+| Face Recognition | "Siapa orang ini? (idpersonal / UNKNOWN)" |
+| Line Crossing | "Dia bergerak masuk atau keluar?" |
+| Database | "Apa histori orang ini hari ini? Berapa occupancy?" |
+
+Aturan tambahan yang wajib dijaga di seluruh implementasi:
+
+- **Counting independen dari Recognition.** Penghitungan = tracking + crossing. Tidak butuh wajah. Recognition gagal → event tetap tercatat sebagai `UNKNOWN`, angka tetap benar.
+- **`track_id` bukan identitas.** `track_id` bersifat sementara per kamera. `idpersonal` berasal dari face recognition dan ditautkan ke track setelah *voting* beberapa hasil.
+- Setiap modul adalah class/module terpisah sehingga model dapat diganti tanpa mengubah keseluruhan sistem.
+
+---
+
+# 5. Arsitektur Sistem
+
+## 5.1 Tata Letak Dua Kamera
+
+Satu kamera hanya melihat wajah untuk satu arah. Karena itu dipakai dua kamera pada satu pintu:
+
+| Kamera | Pemasangan | Tanggung jawab |
+|---|---|---|
+| `cam_out` | **di luar** pintu, menghadap jalur pendekatan luar | event `IN` + identitas orang **masuk** |
+| `cam_in` | **di dalam** pintu, menghadap jalur pendekatan dalam | event `OUT` + identitas orang **keluar** |
+
+Occupancy tunggal disuplai kedua kamera dengan dedup berdasarkan `(waktu, arah)`. Filter arah: `cam_out` hanya mencatat transisi `LUAR→DALAM`, `cam_in` hanya `DALAM→LUAR`.
+
+## 5.2 Pipeline per Kamera
+
+```
+CSI CAMERA (IMX219-120)
+        │
+        ▼
+  Frame Capture  ── (opsional) undistort lensa 120°
+        │
+        ▼
+  YOLO Detection (person / head)
+        │
+        ▼
+  ByteTrack  ─────────────► track_id, bbox, trajectory
+        │
+        ▼
+  Face Detect + Align (setiap N frame, dalam ROI)
+        │
+        ▼
+  Face Embedding (ArcFace)
+        │
+        ▼
+  Gallery Matching (cosine, threshold + margin)
+        │
+        ▼
+  Identity: idpersonal / UNKNOWN  ──► di-vote lalu dikunci ke track_id
+        │
+        ▼
+  Line Crossing (pita 2 garis) + State Machine + Direction Filter
+        │
+        ▼
+  IN / OUT Event  { idpersonal|UNKNOWN, camera_id, ts, confidence, track_id, snapshot? }
+        │
+        ▼
+  SQLite lokal
+        │
+        ├──► Rekap harian / Occupancy / Cross-check antar kamera
+        │
+        └──► (asinkron, best-effort) Enrichment worker
+                     │
+                     ▼
+             PostgreSQL kepegawaian: SELECT * FROM person.get_info_person($1)
+                     │
+                     ▼
+             persons_cache (nama + info) di SQLite lokal
+                     │
+                     ▼
+             Dashboard / Laporan (JOIN event × persons_cache)
+```
 
-1\. menangkap video dari kamera;
+## 5.3 Efisiensi Komputasi (dua kamera, satu Jetson)
 
-2\. mendeteksi wajah/orang;
+- **Engine model di-*share*.** Satu engine YOLO dan satu engine face embedding dipakai bergantian untuk frame kedua kamera. Hanya tracker + state yang per-kamera. Ini menjaga jejak memori setara satu set model.
+- Face recognition tidak dijalankan setiap frame (`recognition.every_n_frames`).
+- Deteksi pada resolusi diturunkan (`detection.input_size`).
+- Opsi *frame stagger*: kamera A diproses pada frame genap, kamera B pada frame ganjil.
 
-3\. melakukan tracking terhadap individu;
+---
 
-4\. mengenali identitas individu;
+# 6. Target Hardware
 
-5\. mendeteksi crossing terhadap garis virtual;
+| Parameter | Nilai |
+|---|---|
+| Device | NVIDIA Jetson Nano Developer Kit 4GB (B01) |
+| Arsitektur | ARM64 / aarch64 |
+| JetPack | R32.7.1 |
+| CUDA | 10.2 |
+| Python (Jetson) | 3.6.9 |
+| Kamera | 2× IMX219-120 CSI, mode 1280×720 atau 1920×1080 |
+| Power | Barrel jack 5V/4A (jangan micro-USB), mode 10W/MAXN |
+| Pendinginan | Kipas aktif wajib (beban GPU + 2 kamera berkelanjutan) |
+| Penyimpanan | ≥ 32 GB (OS + model + event + snapshot) |
 
-6\. menentukan arah \`IN\` atau \`OUT\`;
+Jetson adalah **inference device**, bukan mesin training. Kendala fisik: FFC bawaan IMX219-120 ±15 cm — Jetson harus berada dalam ~1 m dari kamera, atau memakai FFC/extender berkualitas (kabel buruk = noise gambar). Pertimbangkan enclosure Jetson tepat di atas pintu.
 
-7\. mencegah double counting;
+---
 
-8\. menyimpan event ke database;
+# 7. Layout Kamera & Pemasangan
 
-9\. menghasilkan rekap harian;
+## 7.1 Posisi
 
-10\. berjalan pada Jetson Nano 4GB.
+- `cam_out`: di atas kusen sisi luar, tinggi target **2,1–2,3 m**, sudut nunduk **15–25°**, menghadap jalur orang mendekati pintu dari luar.
+- `cam_in`: cermin dari `cam_out` di sisi dalam.
+- Serendah mungkin di atas kusen. Setiap +10 cm tinggi = sudut lebih curam = wajah lebih *top-down* = akurasi recognition turun. Di atas ~2,7 m dengan sudut curam, wajah tertutup dahi/rambut.
+- Zona wajah tajam diarahkan ke **1,5–3 m** di depan pintu.
 
-  
+## 7.2 Backlight
 
-\---
+Pintu kaca gedung = backlight. Ini mode gagal yang tercatat pada sistem people-counting komersial (untuk penghitungan **dan** recognition). IMX219 memiliki WDR/HDR lemah. Mitigasi:
 
-  
+- atur sudut agar menghindari garis matahari langsung;
+- pertimbangkan fill light sisi dalam;
+- bila memungkinkan, pilih waktu perekaman probe di kondisi cahaya terburuk agar threshold dikalibrasi konservatif.
 
-\# 3. Non-Goals
+## 7.3 Layout Fisik Pintu (mitigasi terkuat untuk gerombolan)
 
-  
+Bila layout memungkinkan, persempit jalur masuk menjadi **satu-satu** (koridor sempit / tali / turnstile). Ini peningkatan keandalan terbesar dan termurah untuk counting maupun recognition (lihat §12).
 
-Versi pertama sistem tidak bertujuan untuk:
+## 7.4 Site Survey (Capaian 1c)
 
-  
+Setelah kamera terpasang fisik:
 
-\- melakukan surveillance terhadap area yang luas;
+1. Rekam klip 1280×720 dari `cam_out` dan `cam_in` di posisi asli: orang lewat `IN` dan `OUT`, skenario satu-satu / beriringan 2 / beriringan 3 / gerombolan 4–5 / sejajar 2.
+2. Ukur tinggi wajah dalam piksel saat berada di pita garis → harus ≥ 112 px.
+3. Cek sudut wajah saat approach → pitch < ~25°.
+4. Set `counting.band.<cam>` (garis luar/dalam), `recognition.roi`, parameter undistort.
+5. Klip menjadi *probe set* untuk Capaian 4 (kalibrasi threshold) dan Capaian 5 (uji counting).
 
-\- mengenali seluruh populasi tanpa registrasi;
+---
 
-\- menggantikan sistem keamanan profesional;
+# 8. Komponen Computer Vision
 
-\- melakukan identification dari wajah yang sangat kecil/tidak terlihat;
+## 8.1 Object / Head Detection
 
-\- mengenali seseorang ketika wajah sepenuhnya tertutup;
+YOLO mendeteksi target pada frame.
 
-\- menggunakan cloud inference sebagai komponen utama.
+- Kelas dasar: `person`.
+- Opsi untuk kondisi ramai: model deteksi **kepala** (mis. dilatih pada CrowdHuman). Kepala lebih terpisah dari atas dibanding badan.
+- Output minimal per deteksi: `class`, `confidence`, `bbox [x1,y1,x2,y2]`.
+- Face recognition tidak dijalankan pada seluruh frame — hanya pada ROI relevan.
 
-  
+Contoh output:
 
-\---
+```json
+{ "class": "person", "confidence": 0.94, "bbox": [320, 120, 520, 620] }
+```
 
-  
+Model dioptimalkan untuk Jetson Nano (ONNX → TensorRT FP16, Fase Optimasi).
 
-\# 4. Target Pengguna
+## 8.2 Tracking
 
-  
+**ByteTrack** (alternatif: SORT, DeepSORT).
 
-\### 4.1 Administrator
+- Menghasilkan: `track_id`, `bbox`, `confidence`, `trajectory`.
+- `track_buffer` besar (mis. 45–60 frame) untuk menjembatani occlusion singkat (tailgating) sehingga `track_id` orang di belakang tetap bertahan.
+- `track_id` ≠ `idpersonal`. Keduanya informasi terpisah.
 
-  
+Tujuan tracking: mencegah double counting, mengetahui trajectory, menentukan crossing, dan menautkan hasil face recognition ke objek.
 
-Bertanggung jawab terhadap:
+## 8.3 Face Recognition
 
-  
+Menggunakan **face embedding** (bukan classifier per orang).
 
-\- registrasi pengguna;
+```
+Face → Face Alignment (5-titik, 112×112) → Face Embedding (ArcFace) → Vektor embedding
+```
 
-\- pengambilan foto wajah;
+**Tidak ada training / fine-tuning model.** Alasan:
 
-\- konfigurasi kamera;
+- Model ArcFace pretrained sudah general dari jutaan wajah.
+- Jumlah orang terdaftar (puluhan–ratusan) jauh dari cukup untuk melatih apa pun; memaksakan training = overfitting parah.
+- *Enrollment* seseorang bukan training. Enrollment hanya menghasilkan embedding yang dimasukkan ke gallery.
 
-\- konfigurasi virtual line;
+Model kandidat: ArcFace / InsightFace (R50 / MobileFaceNet) dalam format ONNX. Sebelum implementasi final, verifikasi kompatibilitas dengan JetPack R32.7.1, CUDA 10.2, Python 3.6, ARM64. Jangan mengasumsikan library modern otomatis kompatibel dengan Jetson Nano. Catatan: `insightface` via pip kemungkinan gagal di Python 3.6 Jetson — rencana cadangan: memakai model ONNX mentah + preprocessing manual.
 
-\- melihat histori;
+## 8.4 Identity Matching (Identifikasi 1:N Open-set)
 
-\- melihat statistik.
+```
+query_embedding → cosine similarity ke seluruh gallery → top-k
+        → keputusan: (top1 ≥ threshold) AND (top1 − top2 ≥ margin)  → idpersonal
+                     selain itu                                     → UNKNOWN
+        → hasil di-vote sepanjang jendela (recognition.vote_window) sebelum dikunci ke track_id
+```
 
-  
+- Mayoritas orang lewat **tidak terdaftar** → sistem harus sering menghasilkan `UNKNOWN` dengan benar (open-set).
+- Semakin besar gallery, semakin besar peluang wajah asing menyangkut ke suatu entri → FAR per-perbandingan harus rendah (≈ 1e-4 s/d 1e-5). `margin` mencegah pemilihan identitas terdekat yang lemah.
+- Jangan pernah memaksakan identitas dengan similarity tertinggi bila di bawah threshold.
+- Threshold dan margin **dapat dikonfigurasi** dan **dikalibrasi** (lihat §10). Tidak boleh hard-code.
+- Search 1:N (ratusan–ribuan vektor cosine per pemanggilan) murah di Jetson. FAISS belum diperlukan; catat untuk skala > 100k.
 
-\### 4.2 Operator
+---
 
-  
+# 9. Gallery & Enrollment
 
-Menggunakan sistem untuk:
+## 9.1 Kebijakan Data
 
-  
+- **Perekaman ulang dengan IMX219** pada posisi pintu terpasang. Ini menghilangkan *domain gap* (selfie 40 cm ≠ kamera pintu 2–3 m nunduk, barrel ringan), memberi kontrol kualitas, dan label identitas pasti benar.
+- Dataset lama `raw/` (dump enrollment aplikasi mobile terdahulu) **di-*shelve***: 1420 folder `idpersonal`, mayoritas hanya 1 foto usable, domain selfie. Tetap disimpan (gitignore) — satu-satunya kegunaan tersisa: **pool impostor** untuk uji FAR. Diaudit oleh `scripts/ingest_raw.py`.
 
-\- monitoring kondisi pintu;
+## 9.2 Protokol Enrollment
 
-\- melihat jumlah orang di dalam;
+Target: **15–20 citra per orang**, ditautkan ke `idpersonal` asli (dipilih dari daftar orang di PostgreSQL saat capture).
 
-\- melihat event masuk/keluar.
+Variasi wajib (jangan 20 citra hampir identik):
 
-  
+| Dimensi | Nilai |
+|---|---|
+| Pose | frontal, yaw ±30° kiri/kanan, pitch sedikit atas/bawah |
+| Ekspresi | netral, bicara, senyum |
+| Kacamata | dengan / tanpa (bila dipakai) |
+| Pencahayaan | normal, terang, redup, backlight |
+| Jarak | ~1 m, ~2 m (operasional), ~3 m |
 
-\### 4.3 Individu Terdaftar
+## 9.3 Quality Check Otomatis (tolak bila gagal)
 
-  
+1. confidence face detector ≥ ambang;
+2. ketajaman (variance of Laplacian) ≥ ambang — tolak motion blur;
+3. ukuran wajah ≥ `recognition.min_face_px` (112 px);
+4. yaw/pitch < 30°;
+5. exposure wajar (tidak terlalu gelap / *blown*);
+6. dedup: tolak bila cosine similarity > 0,97 terhadap sample yang sudah diterima.
 
-Orang yang wajahnya telah diregistrasikan ke sistem.
+## 9.4 Agregasi Embedding
 
-  
+- Simpan **semua** embedding per-sample untuk tiap `idpersonal` + satu *mean embedding* (L2-normalized).
+- Matching: max cosine similarity ke salah satu sample, atau mean top-k.
+- Path: `gallery.embeddings_path` (`data/gallery/embeddings.npz`).
 
-Contoh:
+## 9.5 Perkayaan Bertahap (opsional)
 
-  
+Saat terjadi match confident di pintu, embedding kamera-pintu itu boleh ditambahkan ke gallery `idpersonal` tersebut (*template update*) dengan guardrail (confidence tinggi, margin lebar, batas jumlah per hari). Tujuan: gallery makin cocok dengan domain kamera pintu seiring waktu.
 
-\`\`\`text
+## 9.6 Pemisahan Gallery dan Probe
 
-Juris
-
-Gusti
-
-Rizki
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 5. Arsitektur Sistem
-
-  
-
-\`\`\`text
-
-USB CAMERA
-
-│
-
-▼
-
-┌─────────────┐
-
-│ Frame Input │
-
-└──────┬──────┘
-
-│
-
-▼
-
-┌─────────────┐
-
-│ YOLO │
-
-│ Detection │
-
-└──────┬──────┘
-
-│
-
-▼
-
-┌─────────────┐
-
-│ Tracker │
-
-│ ByteTrack │
-
-└──────┬──────┘
-
-│
-
-▼
-
-┌─────────────┐
-
-│ Face │
-
-│ Recognition │
-
-└──────┬──────┘
-
-│
-
-▼
-
-┌─────────────┐
-
-│ Similarity │
-
-│ Matching │
-
-└──────┬──────┘
-
-│
-
-▼
-
-Juris/Gusti/Rizki
-
-│
-
-▼
-
-┌─────────────┐
-
-│Line Crossing│
-
-└──────┬──────┘
-
-│
-
-┌─────┴─────┐
-
-▼ ▼
-
-IN OUT
-
-│ │
-
-└─────┬─────┘
-
-▼
-
-┌─────────────┐
-
-│ SQLite │
-
-└──────┬──────┘
-
-│
-
-▼
-
-Dashboard/API
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 6. Komponen Computer Vision
-
-  
-
-\## 6.1 Object / Face Detection
-
-  
-
-YOLO digunakan untuk mendeteksi objek target pada frame.
-
-  
-
-Output minimal:
-
-  
-
-\`\`\`text
-
-class
-
-confidence
-
-x1
-
-y1
-
-x2
-
-y2
-
-\`\`\`
-
-  
-
-Contoh:
-
-  
-
-\`\`\`json
-
-{
-
-"class": "person",
-
-"confidence": 0.94,
-
-"bbox": \[320, 120, 520, 620\]
-
-}
-
-\`\`\`
-
-  
-
-Model harus dioptimalkan untuk perangkat Jetson Nano.
-
-  
-
-\---
-
-  
-
-\# 7. Tracking
-
-  
-
-Tracker digunakan untuk mempertahankan identitas sementara suatu objek antar-frame.
-
-  
-
-Contoh:
-
-  
-
-\`\`\`text
-
-Frame 1 → Track ID 17
-
-Frame 2 → Track ID 17
-
-Frame 3 → Track ID 17
-
-Frame 4 → Track ID 17
-
-\`\`\`
-
-  
-
-Tujuan utama tracking:
-
-  
-
-\- mencegah double counting;
-
-\- mengetahui trajectory;
-
-\- menentukan crossing;
-
-\- menghubungkan hasil face recognition dengan objek.
-
-  
-
-Tracker yang direkomendasikan:
-
-  
-
-\*\*ByteTrack\*\*
-
-  
-
-Alternatif:
-
-  
-
-\- SORT;
-
-\- DeepSORT.
-
-  
-
-\---
-
-  
-
-\# 8. Face Recognition
-
-  
-
-YOLO dan tracker tidak bertanggung jawab terhadap identitas manusia.
-
-  
-
-Sistem membutuhkan model face recognition.
-
-  
-
-Pipeline:
-
-  
-
-\`\`\`text
-
-Face
-
-↓
-
-Face Alignment
-
-↓
-
-Face Embedding Model
-
-↓
-
-Embedding Vector
-
-↓
-
-Similarity Matching
-
-↓
-
-Identity
-
-\`\`\`
-
-  
-
-Contoh:
-
-  
-
-\`\`\`text
-
-Input Face
-
-↓
-
-Embedding
-
-↓
-
-\[0.12, -0.31, 0.84, ...\]
-
-↓
-
-Compare Gallery
-
-↓
-
-Juris = 0.87
-
-Gusti = 0.32
-
-Rizki = 0.28
-
-↓
-
-Juris
-
-\`\`\`
-
-  
-
-Model yang dapat digunakan pada tahap implementasi:
-
-  
-
-\- ArcFace / InsightFace;
-
-\- model face embedding lain yang kompatibel dengan ONNX/TensorRT.
-
-  
-
-Model harus dipilih berdasarkan kompatibilitas dengan:
-
-  
-
-\- CUDA 10.2;
-
-\- JetPack R32.7.1;
-
-\- Python 3.6;
-
-\- ARM64;
-
-\- Jetson Nano 4GB.
-
-  
-
-\---
-
-  
-
-\# 9. Face Gallery / Enrollment
-
-  
-
-Setiap individu harus diregistrasikan terlebih dahulu.
-
-  
-
-Contoh:
-
-  
-
-\`\`\`text
-
-gallery/
-
-├── juris/
-
-│ ├── 001.jpg
-
-│ ├── 002.jpg
-
-│ ├── 003.jpg
-
-│ └── ...
-
-│
-
-├── gusti/
-
-│ ├── 001.jpg
-
-│ ├── 002.jpg
-
-│ └── ...
-
-│
-
-└── rizki/
-
-├── 001.jpg
-
-├── 002.jpg
-
-└── ...
-
-\`\`\`
-
-  
-
-Sistem kemudian menghasilkan embedding.
-
-  
-
-\`\`\`text
-
-Juris
-
-↓
-
-20 sample
-
-↓
-
-Face Embedding
-
-↓
-
-Representative Embedding
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 10. Enrollment Protocol
-
-  
-
-Enrollment harus memperhatikan kondisi nyata kamera.
-
-  
-
-Target awal:
-
-  
-
-\*\*15–20 foto per orang.\*\*
-
-  
-
-Variasi yang direkomendasikan:
-
-  
-
-\### Pose
-
-  
-
-\- frontal;
-
-\- kiri ±30°;
-
-\- kanan ±30°;
-
-\- sedikit menunduk;
-
-\- sedikit mendongak.
-
-  
-
-\### Illumination
-
-  
-
-\- normal;
-
-\- terang;
-
-\- redup;
-
-\- shadow;
-
-\- backlight.
-
-  
-
-\### Appearance
-
-  
-
-\- tanpa kacamata;
-
-\- menggunakan kacamata;
-
-\- masker jika memang digunakan di lingkungan deployment.
-
-  
-
-\### Distance
-
-  
-
-\- dekat;
-
-\- jarak operasional;
-
-\- sedikit lebih jauh.
-
-  
-
-Foto tidak boleh seluruhnya diambil secara berurutan dengan pose identik.
-
-  
-
-Tujuan enrollment adalah memperoleh \*\*keragaman representasi identitas\*\*, bukan sekadar jumlah gambar.
-
-  
-
-\---
-
-  
-
-\# 11. Gallery dan Probe
-
-  
-
-Data harus dipisahkan.
-
-  
-
-\`\`\`text
-
+```
 dataset/
-
-│
-
-├── gallery/
-
-│ ├── juris/
-
-│ ├── gusti/
-
-│ └── rizki/
-
-│
-
+├── gallery/            enrollment 15–20/orang (dari kamera pintu)
 └── probe/
+    ├── calib/          untuk kalibrasi threshold
+    └── test/           metrik final — JANGAN disentuh saat kalibrasi
+        ├── clean/  pose/  illumination/  occlusion/  combined/
+```
 
-├── clean/
+Robustness tidak boleh dinilai memakai data yang terlalu mirip dengan data enrollment.
 
-├── pose/
+---
 
-├── illumination/
+# 10. Kalibrasi Ambang (Threshold)
 
-├── occlusion/
+Threshold cosine similarity + margin adalah **satu-satunya** parameter yang "di-tuning" pada sistem ini.
 
-└── combined/
+1. Susun pasangan **genuine** (orang sama) dan **impostor** (orang beda) dari `probe/calib/` — utamakan citra dari kamera pintu; `raw/` boleh sebagai pool impostor tambahan.
+2. Hitung cosine similarity tiap pasangan.
+3. Sapu (sweep) `τ` dari 0 ke 1; hitung FAR(τ) dan FRR(τ).
+4. `τ_EER` = titik FAR(τ) = FRR(τ) → baseline.
+5. Pintu perlu keamanan lebih tinggi → geser `τ` naik: FAR turun, FRR naik sedikit. Dokumentasikan sebagai keputusan desain.
+6. **Validasi ulang `τ`** pada kondisi kamera pintu sebenarnya (cahaya, sudut, kualitas sensor) — distribusi similarity dapat bergeser.
+7. Laporkan EER final pada `probe/test/` (bukan `calib/`) sebagai metrik akhir, supaya evaluasi tidak overfitting terhadap ambang.
 
-\`\`\`
+Metrik: Accuracy, FAR, FRR, ROC, AUC, EER, TAR@FAR.
 
-  
+---
 
-Gallery digunakan untuk registrasi.
+# 11. Line Crossing (Pita Dua Garis)
 
-  
+Area pintu dikonfigurasi dengan **dua garis sejajar** membentuk pita:
 
-Probe digunakan untuk pengujian.
+```
+─────────── garis LUAR
+   (pita)                urutan LUAR → DALAM  = IN
+─────────── garis DALAM  urutan DALAM → LUAR  = OUT
+```
 
-  
+- Arah ditentukan dari **urutan crossing** kedua garis, bukan posisi satu frame.
+- Anchor: **kepala / centroid** (`counting.crossing_anchor`), bukan pusat bbox badan.
+- Koordinat garis = fraksi frame, di-set per kamera pada Capaian 1c. Tidak boleh hard-code.
+- Poligon zona (mis. `inside`/`outside` + `walk-in`/`walk-out`/`pass-by`) adalah alternatif setara — murni geometri gambar pada satu kamera.
 
-Hal ini penting agar robustness sistem tidak dinilai menggunakan data yang terlalu mirip dengan data enrollment.
+## 11.1 Event State Machine (per track)
 
-  
+```
+UNKNOWN → OUTSIDE → (crossing pita) → INSIDE → (crossing pita) → OUTSIDE
+```
 
-\---
+Event hanya dibuat ketika transisi state valid:
 
-  
+- `OUTSIDE → INSIDE` pada `cam_out` → `<identitas> IN`
+- `INSIDE → OUTSIDE` pada `cam_in` → `<identitas> OUT`
 
-\# 12. Line Crossing
+## 11.2 Anti Double Counting
 
-  
+| Mekanisme | Keterangan |
+|---|---|
+| Tracking | orang sama mempertahankan `track_id` |
+| Multi-frame confirmation | crossing dikonfirmasi `counting.confirm_frames`, bukan satu frame |
+| Cooldown per track | setelah event, track yang sama tidak langsung menerima event berikutnya (`counting.cooldown_s`) |
+| `min_track_len` | track harus eksis minimal N frame sebelum boleh menghasilkan event |
+| Identity confidence | identitas similarity rendah tidak dicatat sebagai identitas valid |
+| Dedup antar kamera | occupancy tunggal + filter arah + dedup `(waktu, arah)` |
+| Track lahir di tengah/lewat garis tanpa histori approach | tidak langsung dihitung, atau dihitung sebagai `UNKNOWN` low-confidence |
 
-Area pintu dikonfigurasi menggunakan virtual line.
+---
 
-  
+# 12. Skenario Banyak Orang — Kemampuan dan Batas
 
-\`\`\`text
+| Skenario | Counting | Recognition |
+|---|---|---|
+| Satu-satu, ada jarak | ~97–99% | baik |
+| Beriringan rapat (1–2 di belakang) | ~90–95% bila tracker di-tune | orang belakang sering gagal → `UNKNOWN`, tetap terhitung |
+| Gerombolan padat (3+ sejajar, saling menutup) | turun signifikan (undercount karena bbox menyatu, ID switch) | mayoritas gagal |
 
-AREA DALAM
+**Akar masalah:** satu kamera tidak bisa optimal untuk dua hal sekaligus. Face recognition butuh kamera menghadap wajah, nunduk ~15–25°. Penghitungan gerombolan yang andal butuh kamera *top-down* ~60–90° (dari atas kepala tidak saling menutup — sistem people-counter komersial memakai top-down + deteksi kepala + zona, dan sengaja **tidak** melakukan face recognition).
 
-  
+**Mitigasi yang dipilih:** deteksi kepala (bukan badan) + tracker anti-occlusion + konfirmasi crossing multi-frame + cooldown per track. **Peningkatan terbesar dan termurah = mempersempit pintu menjadi jalur satu-satu (§7.3).**
 
-│
+**Wajib diukur** (bukan diasumsikan) pada probe kamera-pintu: missed count, false count, duplicate count, ID switch, identity accuracy — per skenario. Angka ini menjadi dasar keputusan pimpinan (menerima error gerombolan, atau menambah kamera ketiga *top-down* khusus penghitungan).
 
-│
+---
 
-─────────┼─────────
+# 13. Unknown Person
 
-│
+Bila wajah tidak cocok dengan gallery (`similarity < threshold` atau `margin` tidak terpenuhi):
 
-│
-
-  
-
-AREA LUAR
-
-\`\`\`
-
-  
-
-Trajectory centroid/anchor point digunakan untuk menentukan crossing.
-
-  
-
-\### IN
-
-  
-
-\`\`\`text
-
-OUTSIDE
-
-↓
-
-LINE
-
-↓
-
-INSIDE
-
-\`\`\`
-
-  
-
-Event:
-
-  
-
-\`\`\`text
-
-IN
-
-\`\`\`
-
-  
-
-\### OUT
-
-  
-
-\`\`\`text
-
-INSIDE
-
-↓
-
-LINE
-
-↓
-
-OUTSIDE
-
-\`\`\`
-
-  
-
-Event:
-
-  
-
-\`\`\`text
-
-OUT
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 13. Event State Machine
-
-  
-
-Untuk menghindari double counting, setiap track memiliki state.
-
-  
-
-Contoh:
-
-  
-
-\`\`\`text
-
-UNKNOWN
-
-│
-
-▼
-
-OUTSIDE
-
-│
-
-│ crossing
-
-▼
-
-INSIDE
-
-│
-
-│ crossing
-
-▼
-
-OUTSIDE
-
-\`\`\`
-
-  
-
-Event hanya dibuat ketika terjadi transisi state yang valid.
-
-  
-
-Contoh:
-
-  
-
-\`\`\`text
-
-OUTSIDE → INSIDE
-
-\`\`\`
-
-  
-
-menghasilkan:
-
-  
-
-\`\`\`text
-
-Juris IN
-
-\`\`\`
-
-  
-
-Sedangkan:
-
-  
-
-\`\`\`text
-
-INSIDE → OUTSIDE
-
-\`\`\`
-
-  
-
-menghasilkan:
-
-  
-
-\`\`\`text
-
-Juris OUT
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 14. Anti Double Counting
-
-  
-
-Sistem harus memiliki beberapa mekanisme:
-
-  
-
-\### Tracking
-
-  
-
-Orang yang sama mempertahankan \`track\_id\`.
-
-  
-
-\### Crossing confirmation
-
-  
-
-Crossing harus dikonfirmasi berdasarkan beberapa frame, bukan satu frame.
-
-  
-
-\### Cooldown
-
-  
-
-Setelah event:
-
-  
-
-\`\`\`text
-
-Juris → IN
-
-\`\`\`
-
-  
-
-sistem tidak langsung menerima event IN berikutnya dari track yang sama.
-
-  
-
-\### Identity confidence
-
-  
-
-Identity dengan confidence/similarity rendah tidak boleh langsung dicatat sebagai identitas valid.
-
-  
-
-\---
-
-  
-
-\# 15. Unknown Person
-
-  
-
-Jika wajah tidak cocok dengan gallery:
-
-  
-
-\`\`\`text
-
-Similarity < threshold
-
-\`\`\`
-
-  
-
-maka:
-
-  
-
-\`\`\`text
-
+```
 identity = UNKNOWN
+```
 
-\`\`\`
+Sistem membedakan: **Known Person**, **Unknown Person**, **No Face**, **Low Confidence**.
 
-  
+- Event `UNKNOWN IN` / `UNKNOWN OUT` tetap disimpan (statistik anonim + occupancy).
+- Alarm opsional: `UNKNOWN` menumpuk di luar jam kerja.
+- Tamu: bila perlu dibedakan dari "orang asing", diperlukan alur pra-registrasi tamu (enroll sementara, kedaluwarsa). Bila tidak, tamu = `UNKNOWN`.
 
-Contoh:
+---
 
-  
+# 14. Database
 
-\`\`\`text
+## 14.1 SQLite Lokal (Jetson, offline-first)
 
-UNKNOWN → IN
+### `persons` (cache identitas lokal + metadata gallery)
 
-UNKNOWN → OUT
-
-\`\`\`
-
-  
-
-Event tetap dapat disimpan sebagai statistik anonim apabila dibutuhkan.
-
-  
-
-Sistem tidak boleh memaksa seseorang menjadi Juris hanya karena similarity tertinggi jika nilai similarity sebenarnya berada di bawah threshold.
-
-  
-
-\---
-
-  
-
-\# 16. Database
-
-  
-
-SQLite digunakan pada edge device untuk versi awal.
-
-  
-
-\## \`persons\`
-
-  
-
-\`\`\`sql
-
+```sql
 CREATE TABLE persons (
-
-id INTEGER PRIMARY KEY,
-
-name TEXT NOT NULL,
-
-embedding BLOB,
-
-created\_at DATETIME DEFAULT CURRENT\_TIMESTAMP
-
+    idpersonal   TEXT PRIMARY KEY,          -- UUID dari sistem kepegawaian
+    enrolled_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    n_samples    INTEGER NOT NULL DEFAULT 0,
+    source       TEXT DEFAULT 'imx219'       -- imx219 | raw | mixed
 );
+```
 
-\`\`\`
+Embedding disimpan di `data/gallery/embeddings.npz` (bukan BLOB di tabel), di-*key* oleh `idpersonal`.
 
-  
+### `events`
 
-\## \`events\`
-
-  
-
-\`\`\`sql
-
+```sql
 CREATE TABLE events (
-
-id INTEGER PRIMARY KEY,
-
-person\_id INTEGER,
-
-identity TEXT,
-
-event\_type TEXT NOT NULL,
-
-confidence REAL,
-
-timestamp DATETIME NOT NULL,
-
-date DATE NOT NULL,
-
-track\_id INTEGER,
-
-image\_path TEXT,
-
-FOREIGN KEY(person\_id) REFERENCES persons(id)
-
+    id          INTEGER PRIMARY KEY,
+    idpersonal  TEXT,                        -- NULL bila UNKNOWN
+    identity    TEXT NOT NULL,               -- idpersonal atau 'UNKNOWN'
+    event_type  TEXT NOT NULL CHECK (event_type IN ('IN','OUT')),
+    camera_id   TEXT NOT NULL CHECK (camera_id IN ('cam_out','cam_in')),
+    confidence  REAL,
+    similarity  REAL,                        -- top-1 cosine similarity saat keputusan
+    all_scores  TEXT,                        -- JSON top-k skor, untuk re-kalibrasi threshold nanti
+    track_id    INTEGER,
+    timestamp   DATETIME NOT NULL,           -- waktu SISTEM, bukan dari client
+    date        DATE NOT NULL,
+    image_path  TEXT
 );
+```
 
-\`\`\`
+### `occupancy_state`
 
-  
+```sql
+CREATE TABLE occupancy_state (
+    idpersonal   TEXT PRIMARY KEY,
+    entered_at   DATETIME NOT NULL,
+    last_event   TEXT NOT NULL                -- 'IN' | 'OUT'
+);
+```
 
-Contoh:
+### `persons_cache` (hasil enrichment dari PostgreSQL)
 
-  
+```sql
+CREATE TABLE persons_cache (
+    idpersonal  TEXT PRIMARY KEY,
+    name        TEXT,
+    info_json   TEXT,                         -- baris get_info_person() sebagai JSON opaque
+    fetched_at  DATETIME NOT NULL
+);
+```
 
-\`\`\`text
+## 14.2 PostgreSQL Kepegawaian (eksternal)
 
-id | identity | event | timestamp
+- Query: `SELECT * FROM person.get_info_person($1)` dengan `$1 = idpersonal`.
+- **Tidak pernah** dipanggil di jalur real-time. Worker enrichment asinkron: untuk `idpersonal` baru pada `events` → panggil fungsi → simpan ke `persons_cache`.
+- PostgreSQL putus/lambat → event tetap tercatat dengan `idpersonal`, nama menyusul.
+- Aturan:
+  - DSN dari environment variable (`personnel_db.dsn_env`), bukan di source, bukan di git;
+  - user PostgreSQL **read-only**;
+  - query selalu parameterized (`$1`) — jangan format string `idpersonal` ke SQL;
+  - validasi `idpersonal` = UUID valid sebelum query;
+  - timeout pendek + retry backoff + circuit breaker;
+  - TLS bila melewati jaringan.
+- Diperlukan sebelum Capaian 6: host/port/kredensial, daftar kolom yang dikembalikan `get_info_person()`, dan (bila ada) fungsi untuk melisting seluruh orang (untuk UI enrollment admin).
 
-\---+----------+-------+-------------------
+---
 
-1 | Juris | IN | 07:30:21
+# 15. Rekap Harian & Occupancy
 
-2 | Gusti | IN | 07:35:12
+```
+================================
+DAILY PEOPLE FLOW — 2026-09-08
+================================
 
-3 | Rizki | IN | 07:42:18
+Juris  (a4f9…)   IN: 1   OUT: 1   INSIDE: NO
+Gusti  (c8b1…)   IN: 2   OUT: 2   INSIDE: NO
+Rizki  (f22e…)   IN: 1   OUT: 0   INSIDE: YES
+UNKNOWN          IN: 5   OUT: 4
 
-4 | Juris | OUT | 08:20:11
+--------------------------------
+Current Occupancy : 1 known + 1 unknown
+--------------------------------
+```
 
-\`\`\`
+- `INSIDE` / status ditentukan dari event terakhir per `idpersonal` (`occupancy_state`).
+- Akhir hari: `idpersonal` yang masih di `occupancy_state` dengan `last_event='IN'` = anomali (exit tidak terbaca / orang menginap) → laporkan.
 
-  
+---
 
-\---
+# 16. Dashboard & Live Monitoring (prioritas Could)
 
-  
+Dashboard minimal:
 
-\# 17. Rekap Harian
-
-  
-
-Sistem harus menyediakan:
-
-  
-
-\`\`\`text
-
-Tanggal: 7 September 2026
-
-  
-
-Juris
-
-IN : 1
-
-OUT : 1
-
-Current: OUT
-
-  
-
-Gusti
-
-IN : 2
-
-OUT : 2
-
-Current: OUT
-
-  
-
-Rizki
-
-IN : 1
-
-OUT : 1
-
-Current: OUT
-
-\`\`\`
-
-  
-
-Status \`Current\` dapat ditentukan dari event terakhir.
-
-  
-
-\---
-
-  
-
-\# 18. Dashboard
-
-  
-
-Dashboard minimal menampilkan:
-
-  
-
-\`\`\`text
-
+```
 ┌────────────────────────────────────┐
-
-│ PEOPLE FLOW MONITORING │
-
+│ PEOPLE FLOW MONITORING             │
 ├────────────────────────────────────┤
-
-│ │
-
-│ Orang di dalam 3 │
-
-│ Total IN 17 │
-
-│ Total OUT 14 │
-
-│ │
-
+│ Orang di dalam        1 (+1 unk)   │
+│ Total IN              17           │
+│ Total OUT             14           │
 ├────────────────────────────────────┤
-
-│ Nama IN OUT Status │
-
-│ Juris 1 1 OUT │
-
-│ Gusti 2 2 OUT │
-
-│ Rizki 1 1 OUT │
-
+│ Nama    IN  OUT  Status            │
+│ Juris    1   1   OUTSIDE           │
+│ Gusti    2   2   OUTSIDE           │
+│ Rizki    1   0   INSIDE            │
 └────────────────────────────────────┘
+```
 
-\`\`\`
+Live monitoring: stream tiap kamera + bounding box (`idpersonal`/nama, `track_id`, similarity, `IN`/`OUT`) + garis pita virtual.
 
-  
+---
 
-\---
+# 17. Cross-check Occupancy Antar Kamera
 
-  
+- Occupancy versi `cam_out` (Σ IN − Σ OUT yang teramati di FOV-nya) dan `cam_in` harus konsisten dengan occupancy gabungan.
+- Selisih di atas ambang → alarm ("ada crossing terlewat di salah satu kamera").
+- Berguna untuk mendeteksi kamera bergeser, terhalang, atau gagal.
 
-\# 19. Live Monitoring
+---
 
-  
+# 18. Privasi & Kepatuhan
 
-Operator dapat melihat:
+Pengenalan wajah semua orang yang masuk + penautan ke basis data identitas + (Fase 2) presensi = **pemrosesan data biometrik**. UU PDP No. 27/2022: biometrik = data pribadi bersifat spesifik.
 
-  
+Persyaratan (bukan opsional):
 
-\`\`\`text
+- **Papan pemberitahuan** di pintu masuk (tujuan pemrosesan, pengendali data, kontak).
+- **Kebijakan retensi** terdokumentasi: `privacy.retention_days_events`, `database.keep_snapshots_days`. Snapshot retensi pendek.
+- **Simpan embedding, bukan foto wajah mentah** bila memungkinkan (`privacy.store_face_crops: false`).
+- **Purpose limitation**: data tidak dipakai ulang untuk tujuan lain tanpa dasar baru.
+- **Kontrol akses** ke SQLite lokal dan PostgreSQL; user PostgreSQL read-only.
+- Enrollment hanya untuk orang yang memberikan persetujuan untuk pintu ini.
 
-┌─────────────────────────────┐
+---
 
-│ │
+# 19. Performance Requirement
 
-│ CAMERA STREAM │
-
-│ │
-
-│ ┌───────────────┐ │
-
-│ │ Juris │ │
-
-│ │ IN │ │
-
-│ └───────────────┘ │
-
-│ │
-
-│──────── VIRTUAL LINE ───────│
-
-│ │
-
-└─────────────────────────────┘
-
-\`\`\`
-
-  
-
-Bounding box dapat menampilkan:
-
-  
-
-\`\`\`text
-
-Juris
-
-ID: 17
-
-0.87
-
-IN
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 20. Dataset dan Data Collection
-
-  
-
-Data collection harus dilakukan dalam kondisi deployment sebenarnya.
-
-  
-
-Setiap individu sebaiknya memiliki variasi:
-
-  
-
-\### Pose
-
-  
-
-\- frontal;
-
-\- yaw kiri;
-
-\- yaw kanan;
-
-\- pitch atas/bawah.
-
-  
-
-\### Illumination
-
-  
-
-\- normal;
-
-\- low-light;
-
-\- bright;
-
-\- shadow;
-
-\- backlight.
-
-  
-
-\### Occlusion
-
-  
-
-\- glasses;
-
-\- mask;
-
-\- partial occlusion;
-
-\- objek yang dibawa.
-
-  
-
-\### Distance
-
-  
-
-\- dekat;
-
-\- normal;
-
-\- jauh.
-
-  
-
-\### Direction
-
-  
-
-\- masuk;
-
-\- keluar.
-
-  
-
-\---
-
-  
-
-\# 21. Prinsip Dataset
-
-  
-
-Augmentasi tidak menggantikan data nyata.
-
-  
-
-Augmentasi digunakan untuk:
-
-  
-
-\- membantu robustness;
-
-\- regularisasi;
-
-\- memperbanyak variasi training jika model memang dilatih/fine-tuned.
-
-  
-
-Sedangkan data nyata digunakan untuk:
-
-  
-
-\- enrollment;
-
-\- validasi;
-
-\- pengujian deployment;
-
-\- mengukur robustness sebenarnya.
-
-  
-
-\---
-
-  
-
-\# 22. Evaluation Metrics
-
-  
-
-Sistem harus dievaluasi pada dua level.
-
-  
-
-\## 22.1 Face Recognition
-
-  
-
-Minimal:
-
-  
-
-\- Accuracy;
-
-\- FAR;
-
-\- FRR;
-
-\- ROC;
-
-\- AUC;
-
-\- EER;
-
-\- TAR pada FAR tertentu.
-
-  
-
-\## 22.2 People Flow
-
-  
-
-Minimal:
-
-  
-
-\- IN counting accuracy;
-
-\- OUT counting accuracy;
-
-\- identity accuracy;
-
-\- missed detection;
-
-\- false crossing;
-
-\- duplicate event;
-
-\- ID switch.
-
-  
-
-Contoh:
-
-  
-
-\`\`\`text
-
-Ground Truth:
-
-Juris IN 1
-
-Juris OUT 1
-
-  
-
-System:
-
-Juris IN 1
-
-Juris OUT 1
-
-  
-
-Result:
-
-Correct
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 23. Performance Requirement
-
-  
-
-Target awal pada Jetson Nano 4GB:
-
-  
+Target engineering awal pada Jetson Nano 4GB, **dua kamera**:
 
 | Parameter | Target |
+|---|---|
+| Resolusi input | 640×480 (deteksi) dari sumber 1280×720 |
+| Detection | ≥ 8 FPS (engine di-share, bergantian antar kamera) |
+| End-to-end per kamera | ≥ 5 FPS efektif (cukup untuk kecepatan jalan kaki) |
+| Recognition latency | ≤ 300 ms per wajah, dijalankan tiap `every_n_frames` |
+| RAM | ≤ 3 GB (satu set engine di-share) |
+| Precision | TensorRT FP16 |
+| GPU | TensorRT |
 
-|---|---:|
+Angka ini **target engineering**, bukan jaminan. Nilai final diukur pada model, kamera, dan konfigurasi Jetson yang dipakai.
 
-| Resolution | 640×480 / 1280×720 |
+Bila performa rendah, berurutan: turunkan resolusi → optimalkan/ganti model YOLO → TensorRT FP16 → kurangi frekuensi face recognition → perbesar frame skipping → batasi ROI → *frame stagger* antar kamera. Jangan mengganti seluruh arsitektur tanpa profiling.
 
-| Detection | ≥ 8 FPS |
+---
 
-| End-to-end | ≥ 5 FPS |
+# 20. Optimasi Jetson Nano
 
-| Recognition latency | ≤ 300 ms |
+Tahap awal (pipeline benar dulu di laptop):
 
-| RAM | ≤ 3 GB |
-
-| GPU | TensorRT FP16 |
-
-| Storage | ≥ 16 GB |
-
-| Camera | USB / CSI |
-
-  
-
-Angka tersebut merupakan \*\*target engineering awal\*\*, bukan jaminan performa. Nilai final harus diukur pada model, kamera, dan konfigurasi Jetson yang digunakan.
-
-  
-
-\---
-
-  
-
-\# 24. Optimasi Jetson Nano
-
-  
-
-Tahap awal:
-
-  
-
-\`\`\`text
-
-Python
-
-↓
-
-OpenCV
-
-↓
-
-YOLO
-
-↓
-
-Face Recognition
-
-\`\`\`
-
-  
+```
+Python → OpenCV → YOLO → Face Recognition
+```
 
 Setelah pipeline benar:
 
-  
+```
+ONNX → TensorRT → FP16 → engine di-share antar kamera
+```
 
-\`\`\`text
+Optimasi terhadap: input resolution, detection frequency, recognition frequency, batch size, TensorRT engine, memory allocation, frame skipping, frame stagger.
 
-ONNX
+Contoh alokasi:
 
-↓
+```
+YOLO        → tiap frame (bergantian antar kamera)
+Tracker     → tiap frame, per kamera
+Recognition → tiap 5–10 frame, dalam ROI
+Line        → berdasarkan tracker
+Enrichment  → worker asinkron, di luar loop
+```
 
-TensorRT
+---
 
-↓
+# 21. Software Stack
 
-FP16
-
-\`\`\`
-
-  
-
-Optimasi dilakukan terhadap:
-
-  
-
-\- input resolution;
-
-\- detection frequency;
-
-\- recognition frequency;
-
-\- batch size;
-
-\- TensorRT engine;
-
-\- memory allocation;
-
-\- frame skipping.
-
-  
-
-Face recognition tidak perlu dijalankan pada setiap frame.
-
-  
-
-Contoh:
-
-  
-
-\`\`\`text
-
-YOLO → setiap frame
-
-Tracker → setiap frame
-
-Recognition → setiap 5–10 frame
-
-Line → berdasarkan tracker
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 25. Software Stack
-
-  
-
-Baseline:
-
-  
-
-\`\`\`text
-
+```
 OS
-
 └── JetPack / L4T R32.7.1
 
-  
-
 Runtime
-
-├── Python 3.6.9
-
+├── Python 3.6.9 (Jetson) / 3.9+ (laptop dev)
 ├── CUDA 10.2
-
-├── OpenCV
-
+├── OpenCV (Jetson: build sistem dengan GStreamer + CUDA — JANGAN pip install opencv-python di Jetson)
+├── GStreamer (nvarguscamerasrc untuk CSI)
 └── TensorRT
 
-  
-
 Computer Vision
-
-├── YOLO
-
+├── YOLO (person / head)
 ├── ByteTrack
-
-└── Face Recognition / ArcFace
-
-  
+└── ArcFace / InsightFace (ONNX)
 
 Storage
-
-└── SQLite
-
-  
+├── SQLite (lokal, event + gallery meta + cache)
+└── PostgreSQL (eksternal, kepegawaian — read-only)
 
 Optional Backend
-
 ├── FastAPI / Flask
+└── REST API + Dashboard web
+```
 
-└── REST API
+Pemilihan versi library disesuaikan dengan CUDA 10.2, JetPack R32.7.1, Python 3.6, ARM64. Kriteria pemilihan berurutan: **Compatibility → Performance → Memory → Accuracy → Maintenance**. Jangan memilih library hanya karena paling populer/baru.
 
-  
+---
 
-Dashboard
+# 22. Struktur Project
 
-└── Web application
-
-\`\`\`
-
-  
-
-Pemilihan versi library harus disesuaikan dengan CUDA 10.2, JetPack R32.7.1, Python 3.6, dan ARM64.
-
-  
-
-\---
-
-  
-
-\# 26. Struktur Project
-
-  
-
-\`\`\`text
-
-people-flow/
-
-│
-
-├── app.py
-
-│
-
-├── camera/
-
-│ ├── camera.py
-
-│ └── stream.py
-
-│
-
-├── detection/
-
-│ ├── detector.py
-
-│ └── yolo.py
-
-│
-
-├── tracking/
-
-│ ├── tracker.py
-
-│ └── bytetrack.py
-
-│
-
-├── recognition/
-
-│ ├── detector.py
-
-│ ├── embedder.py
-
-│ ├── matcher.py
-
-│ └── gallery.py
-
-│
-
-├── counting/
-
-│ ├── line.py
-
-│ ├── crossing.py
-
-│ └── state.py
-
-│
-
-├── database/
-
-│ ├── database.py
-
-│ ├── models.py
-
-│ └── repository.py
-
-│
-
-├── enrollment/
-
-│ ├── capture.py
-
-│ └── generate\_embedding.py
-
-│
-
+```
+CountingApp/
+├── main.py                     entry point (--check untuk validasi config)
+├── requirements.txt
+├── README.md
 ├── config/
-
-│ └── config.yaml
-
-│
-
-├── models/
-
-│ ├── yolo.engine
-
-│ └── face.engine
-
-│
-
-├── data/
-
-│ ├── gallery/
-
-│ ├── events/
-
-│ └── snapshots/
-
-│
-
+│   └── config.yaml             seluruh tuning runtime
+├── app/
+│   ├── config.py               load + validasi YAML
+│   ├── logging_setup.py
+│   ├── pipeline.py             orchestrator (detect/track/recognize/count menempel di sini)
+│   ├── camera/
+│   │   ├── base.py             CameraSource ABC + Frame
+│   │   ├── webcam.py  filesource.py  csi.py
+│   │   └── factory.py
+│   ├── detection/              YOLO wrapper
+│   ├── tracking/               ByteTrack wrapper
+│   ├── recognition/            detector, embedder, matcher, gallery
+│   ├── counting/               line/band, crossing, state machine, dedup
+│   ├── database/               sqlite repo, models, enrichment worker
+│   └── enrollment/             capture.py, generate_embedding.py
+├── scripts/
+│   └── ingest_raw.py           audit dataset raw/ (shelved)
+├── models/                     *.onnx, *.engine (gitignore)
+├── data/                       gallery/, snapshots/, events.db (gitignore)
+├── dataset/                    gallery/, probe/ (gitignore)
+├── tests/
 └── logs/
+```
 
-\`\`\`
+Jangan membuat satu file Python besar yang menangani seluruh pipeline.
 
-  
+---
 
-\---
+# 23. Functional Requirements
 
-  
-
-\# 27. Functional Requirements
-
-  
-
-| ID | Requirement | Priority |
-
+| ID | Requirement | Prioritas |
 |---|---|---|
-
-| FR-001 | Sistem dapat menerima input kamera | Must |
-
-| FR-002 | Sistem dapat mendeteksi wajah/orang | Must |
-
-| FR-003 | Sistem dapat melakukan tracking | Must |
-
-| FR-004 | Sistem dapat mengenali individu | Must |
-
-| FR-005 | Sistem dapat menentukan IN/OUT | Must |
-
-| FR-006 | Sistem mencegah double counting | Must |
-
-| FR-007 | Sistem menyimpan event | Must |
-
-| FR-008 | Sistem menghasilkan rekap harian | Must |
-
-| FR-009 | Sistem mendukung UNKNOWN | Must |
-
-| FR-010 | Sistem menyediakan enrollment | Must |
-
-| FR-011 | Sistem menyediakan live monitoring | Should |
-
-| FR-012 | Sistem menyimpan snapshot event | Should |
-
-| FR-013 | Sistem menyediakan REST API | Could |
-
-| FR-014 | Sistem menyediakan dashboard web | Could |
-
-  
-
-\---
-
-  
-
-\# 28. Non-Functional Requirements
-
-  
-
-\## Performance
-
-  
-
-Sistem harus mampu berjalan secara real-time atau near-real-time pada Jetson Nano 4GB.
-
-  
-
-\## Reliability
-
-  
-
-Kehilangan satu atau beberapa frame tidak boleh menghasilkan event IN/OUT palsu.
-
-  
-
-\## Privacy
-
-  
-
-Data wajah dan embedding harus disimpan secara aman.
-
-  
-
-\## Offline
-
-  
-
-Core computer vision harus dapat berjalan tanpa internet.
-
-  
-
-\## Maintainability
-
-  
-
-Setiap komponen harus dipisahkan:
-
-  
-
-\`\`\`text
-
-Detection
-
-Tracking
-
-Recognition
-
-Counting
-
-Database
-
-\`\`\`
-
-  
-
-sehingga model dapat diganti tanpa mengubah keseluruhan sistem.
-
-  
-
-\---
-
-  
-
-\# 29. Roadmap Implementasi
-
-  
-
-\## Phase 1 — Camera
-
-  
-
-\`\`\`text
-
-Camera
-
-↓
-
-OpenCV
-
-↓
-
-Display
-
-\`\`\`
-
-  
-
-Acceptance criteria:
-
-  
-
-\- kamera stabil;
-
-\- FPS dapat diukur;
-
-\- tidak terjadi frame drop berlebihan.
-
-  
-
-\---
-
-  
-
-\## Phase 2 — YOLO
-
-  
-
-\`\`\`text
-
-Camera
-
-↓
-
-YOLO
-
-↓
-
-Bounding Box
-
-\`\`\`
-
-  
-
-Acceptance:
-
-  
-
-\- orang dapat dideteksi;
-
-\- confidence dapat ditampilkan;
-
-\- FPS terukur.
-
-  
-
-\---
-
-  
-
-\## Phase 3 — Tracking
-
-  
-
-\`\`\`text
-
-YOLO
-
-↓
-
-ByteTrack
-
-↓
-
-Track ID
-
-\`\`\`
-
-  
-
-Acceptance:
-
-  
-
-\`\`\`text
-
-Person A → ID 1
-
-Person B → ID 2
-
-\`\`\`
-
-  
-
-ID tidak berubah secara berlebihan.
-
-  
-
-\---
-
-  
-
-\## Phase 4 — Face Recognition
-
-  
-
-\`\`\`text
-
-Face
-
-↓
-
-Embedding
-
-↓
-
-Gallery
-
-↓
-
-Identity
-
-\`\`\`
-
-  
-
-Acceptance:
-
-  
-
-\`\`\`text
-
-Juris → Juris
-
-Gusti → Gusti
-
-Rizki → Rizki
-
-Unknown → Unknown
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\## Phase 5 — Line Crossing
-
-  
-
-\`\`\`text
-
-Tracking
-
-+
-
-Virtual Line
-
-↓
-
-IN / OUT
-
-\`\`\`
-
-  
-
-Acceptance:
-
-  
-
-\`\`\`text
-
-OUTSIDE → INSIDE = IN
-
-INSIDE → OUTSIDE = OUT
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\## Phase 6 — Database
-
-  
-
-\`\`\`text
-
-IN/OUT
-
-↓
-
-SQLite
-
-\`\`\`
-
-  
-
-Acceptance:
-
-  
-
-\`\`\`text
-
-Juris IN
-
-Juris OUT
-
-Gusti IN
-
-...
-
-\`\`\`
-
-  
-
-tersimpan dengan timestamp.
-
-  
-
-\---
-
-  
-
-\## Phase 7 — Daily Summary
-
-  
-
-\`\`\`text
-
-Database
-
-↓
-
-Aggregation
-
-↓
-
-Daily Report
-
-\`\`\`
-
-  
-
-Acceptance:
-
-  
-
-\`\`\`text
-
-Juris 1 IN 1 OUT
-
-Gusti 2 IN 2 OUT
-
-Rizki 1 IN 1 OUT
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\## Phase 8 — Optimization
-
-  
-
-\`\`\`text
-
-Baseline
-
-↓
-
-ONNX
-
-↓
-
-TensorRT
-
-↓
-
-FP16
-
-↓
-
-Jetson Optimization
-
-\`\`\`
-
-  
-
-Acceptance:
-
-  
-
-\- FPS meningkat;
-
-\- latency turun;
-
-\- memory stabil;
-
-\- tidak terjadi thermal throttling.
-
-  
-
-\---
-
-  
-
-\# 30. Acceptance Criteria Produk
-
-  
-
-Produk dianggap berhasil apabila:
-
-  
-
-1\. Kamera dapat berjalan secara kontinu.
-
-2\. Sistem dapat mendeteksi orang/wajah.
-
-3\. Sistem dapat mempertahankan tracking.
-
-4\. Sistem dapat mengenali orang terdaftar.
-
-5\. Orang yang tidak dikenal diberi label \`UNKNOWN\`.
-
-6\. Sistem dapat membedakan IN dan OUT.
-
-7\. Satu crossing hanya menghasilkan satu event.
-
-8\. Event tersimpan dengan timestamp.
-
-9\. Rekap harian dapat dihitung.
-
-10\. Sistem dapat berjalan pada Jetson Nano 4GB.
-
-11\. Sistem tetap dapat beroperasi tanpa koneksi internet.
-
-12\. Pengujian menunjukkan tingkat kesalahan counting yang dapat diterima pada kondisi deployment.
-
-  
-
-\---
-
-  
-
-\# 31. Contoh Output Akhir
-
-  
-
-Misalnya aktivitas satu hari:
-
-  
-
-\`\`\`text
-
-07:31:20 Juris IN
-
-07:42:10 Gusti IN
-
-08:01:31 Rizki IN
-
-  
-
-09:15:20 Juris OUT
-
-10:12:10 Gusti OUT
-
-  
-
-11:30:20 Gusti IN
-
-12:10:32 Gusti OUT
-
-  
-
-13:20:11 Rizki OUT
-
-\`\`\`
-
-  
-
-Sistem menghasilkan:
-
-  
-
-\`\`\`text
-
-\================================
-
-DAILY PEOPLE FLOW
-
-\================================
-
-  
-
-Juris
-
-IN : 1
-
-OUT : 1
-
-INSIDE : NO
-
-  
-
-Gusti
-
-IN : 2
-
-OUT : 2
-
-INSIDE : NO
-
-  
-
-Rizki
-
-IN : 1
-
-OUT : 1
-
-INSIDE : NO
-
-  
-
-\--------------------------------
-
-Current Occupancy : 0
-
-\--------------------------------
-
-\`\`\`
-
-  
-
-\---
-
-  
-
-\# 32. Prinsip Arsitektur Utama
-
-  
-
-Sistem harus mengikuti prinsip:
-
-  
-
-\`\`\`text
-
-DETECTION ≠ TRACKING ≠ RECOGNITION ≠ COUNTING
-
-\`\`\`
-
-  
-
-Masing-masing memiliki tanggung jawab berbeda.
-
-  
-
-\`\`\`text
-
-YOLO
-
-"Di mana orangnya?"
-
-  
-
-Tracker
-
-"Apakah ini orang yang sama?"
-
-  
-
-Face Recognition
-
-"Siapa orang ini?"
-
-  
-
-Line Crossing
-
-"Dia bergerak masuk atau keluar?"
-
-  
-
-Database
-
-"Apa histori orang ini hari ini?"
-
-\`\`\`
-
-  
-
-Dengan pemisahan ini, sistem menjadi lebih mudah diuji, dioptimalkan, dan dikembangkan.
-
-  
-
-\---
-
-  
-
-\# 33. Versi MVP
-
-  
-
-MVP tidak perlu langsung memiliki dashboard web.
-
-  
-
-Target MVP:
-
-  
-
-\`\`\`text
-
-USB Camera
-
-↓
-
-YOLO
-
-↓
-
-ByteTrack
-
-↓
-
-Face Recognition
-
-↓
-
-Line Crossing
-
-↓
-
-SQLite
-
-↓
-
-Console / Simple UI
-
-\`\`\`
-
-  
+| FR-001 | Sistem menerima input dari 2 kamera CSI bersamaan | Must |
+| FR-002 | Sistem mendeteksi orang/kepala | Must |
+| FR-003 | Sistem melakukan tracking per kamera | Must |
+| FR-004 | Sistem mengenali individu (1:N) atau menandai `UNKNOWN` | Must |
+| FR-005 | Sistem menentukan `IN`/`OUT` dari pita dua garis + filter arah | Must |
+| FR-006 | Sistem mencegah double counting (per track, per kamera, antar kamera) | Must |
+| FR-007 | Sistem menyimpan event ke SQLite dengan `idpersonal`/`UNKNOWN`, `camera_id`, timestamp sistem | Must |
+| FR-008 | Sistem menghasilkan rekap harian + occupancy | Must |
+| FR-009 | Sistem menangani open-set (mayoritas `UNKNOWN`) dengan benar | Must |
+| FR-010 | Sistem menyediakan enrollment dari kamera IMX219 (15–20 sampel/orang, quality check) | Must |
+| FR-011 | Threshold + margin dapat dikonfigurasi dan dikalibrasi (FAR/FRR/EER) | Must |
+| FR-012 | Worker asinkron mengambil nama/info dari `person.get_info_person($1)` ke `persons_cache` | Must |
+| FR-013 | Sistem berjalan tanpa internet (inti CV + penyimpanan event) | Must |
+| FR-014 | Cross-check occupancy `cam_out` vs `cam_in` + alarm selisih | Should |
+| FR-015 | Live monitoring (stream + overlay) | Should |
+| FR-016 | Sistem menyimpan snapshot event + `all_scores` untuk re-kalibrasi | Should |
+| FR-017 | Perkayaan gallery bertahap (template update) dengan guardrail | Could |
+| FR-018 | REST API | Could |
+| FR-019 | Dashboard web | Could |
+| FR-020 | Alur pra-registrasi tamu | Could |
+| FR-021 | Modul presensi kedinasan (Fase 2) | Won't (rilis 1) |
+
+---
+
+# 24. Non-Functional Requirements
+
+- **Performance:** real-time / near-real-time pada Jetson Nano 4GB dengan 2 kamera (§19).
+- **Reliability:** kehilangan satu/beberapa frame tidak boleh menghasilkan event `IN`/`OUT` palsu. Kamera terputus → pipeline berhenti bersih + log, bukan crash. PostgreSQL terputus → enrichment tertunda, counting jalan terus.
+- **Privacy:** §18. Data wajah/embedding disimpan aman, retensi terbatas.
+- **Offline:** inti computer vision + penyimpanan event berjalan tanpa internet.
+- **Maintainability:** Detection / Tracking / Recognition / Counting / Database terpisah; model dapat diganti tanpa mengubah keseluruhan sistem. Konfigurasi terpisah dari source. Tidak ada threshold/koordinat hard-code. Logging + error handling di setiap modul.
+- **Reproducibility:** `requirements.txt` / `pip freeze` disimpan; versi model + opset ONNX + versi TensorRT didokumentasikan.
+
+---
+
+# 25. Roadmap Implementasi (Capaian)
+
+Setiap capaian harus menghasilkan sistem yang dapat dijalankan dan diuji sebelum lanjut. Implementasi bertahap — jangan sekaligus.
+
+| # | Capaian | Acceptance Criteria |
+|---|---|---|
+| 0 | Scaffold | `python main.py --check` memuat + memvalidasi `config.yaml`, keluar bersih. `tests/` lulus. |
+| 1 | Camera | `CameraSource` pluggable (`webcam`/`file`/`csi`); dua sumber berjalan bersamaan; FPS terukur & stabil; shutdown bersih; recover saat kamera dicabut. |
+| 1b | Kalibrasi lensa | Per kamera: `camera_matrix` + `dist_coeffs` untuk barrel 120° (khusus CSI). Frame ter-undistort. |
+| 1c | Site survey | Kamera terpasang fisik. Klip `cam_out` + `cam_in` untuk semua skenario (§7.4). Set garis pita + ROI recognition per kamera. Tinggi wajah di garis ≥ 112 px. |
+| 2 | Detection | YOLO person/head + confidence tampil; filter kelas; FPS terukur; engine di-share antar kamera. |
+| 3 | Tracking | `track_id` stabil; 2 orang sejajar = 2 ID; ID bertahan saat occlusion singkat (tailgating). Ukur ID switch. |
+| 4 | Face Recognition | Enroll dari IMX219; terdaftar → `idpersonal`, lainnya → `UNKNOWN`; threshold + margin dikalibrasi pada probe kamera-pintu; laporkan EER pada `probe/test/`. |
+| 5 | Counting | Pita 2 garis + state machine + filter arah + cooldown per track; satu crossing = satu event; uji semua skenario §12; dedup antar kamera. |
+| 6 | Database | Event tersimpan dengan timestamp sistem + `camera_id` + `idpersonal`; worker enrichment PostgreSQL → `persons_cache`; validasi UUID + parameterized + read-only. |
+| 7 | Daily Summary | Rekap per `idpersonal` (IN/OUT/status) + occupancy known/unknown; anomali akhir hari. |
+| 8 | Optimization | ONNX → TensorRT FP16; engine di-share; 2 kamera dalam anggaran Nano (RAM ≤ 3 GB, ≥ 5 FPS/kamera, tanpa thermal throttling). |
+| 9 | Cross-check | Occupancy `cam_out` vs `cam_in` konsisten; alarm saat selisih > ambang. |
+
+---
+
+# 26. Fase Produk
+
+## Fase 1 — MVP: Monitoring & Keamanan
+
+```
+2× IMX219 → YOLO → ByteTrack → Face Recognition → Pita 2 Garis → SQLite → Console/UI sederhana
+```
 
 Output:
 
-  
+```
+[07:31:20] cam_out  a4f9… (Juris)  → IN   sim=0.71
+[08:20:11] cam_in   a4f9… (Juris)  → OUT  sim=0.63
+[08:41:05] cam_out  UNKNOWN        → IN
+```
 
-\`\`\`text
+Recognition bersifat **membantu**, ada manusia yang memverifikasi. Alarm `UNKNOWN` di luar jam kerja.
 
-\[07:31:20\] Juris → IN
+## Fase 2 — Presensi Kedinasan
 
-\[09:15:20\] Juris → OUT
+Ditambahkan **hanya setelah** akurasi identitas pada `probe/test/` kamera-pintu memenuhi ambang (mis. TAR ≥ 0,98 pada FAR ≤ 1e-3 per orang) **dan** ada fallback (tap kartu/QR atau koreksi manual). Toleransi error presensi jauh lebih ketat (salah tandai hadir/absen = konsekuensi nyata). Jangan menjanjikan akurasi grade-presensi sebelum terukur.
 
-\[07:42:10\] Gusti → IN
+Setelah MVP stabil: REST API → Dashboard → Reporting → Remote monitoring.
 
-\[10:12:10\] Gusti → OUT
+---
 
-\[11:30:20\] Gusti → IN
+# 27. Acceptance Criteria Produk
 
-\[12:10:32\] Gusti → OUT
+Produk dianggap berhasil (Fase 1) apabila:
 
-\`\`\`
+1. Kedua kamera berjalan kontinu.
+2. Sistem mendeteksi orang/kepala dan mempertahankan tracking.
+3. Sistem mengenali orang terdaftar (`idpersonal`) dan menandai lainnya `UNKNOWN` (open-set benar).
+4. Sistem membedakan `IN` dan `OUT` dari pita dua garis + filter arah.
+5. Satu crossing menghasilkan tepat satu event (tidak ada double count per track / antar kamera).
+6. Event tersimpan dengan timestamp sistem, `camera_id`, dan `idpersonal`/`UNKNOWN`.
+7. Rekap harian + occupancy (known & unknown) dapat dihitung; anomali akhir hari terdeteksi.
+8. Worker enrichment mengisi `persons_cache` dari PostgreSQL saat online; sistem tetap jalan saat offline.
+9. Sistem berjalan pada Jetson Nano 4GB dua kamera dalam anggaran sumber daya.
+10. Tingkat kesalahan counting pada kondisi deployment berada pada level yang **telah diukur dan disepakati** per skenario (§12).
+11. Papan pemberitahuan privasi terpasang; kebijakan retensi aktif.
 
-  
+---
 
-Setelah MVP stabil, baru ditambahkan:
+# 28. Contoh Output Akhir
 
-  
+Aktivitas satu hari:
 
-\`\`\`text
+```
+07:31:20  cam_out  Juris   IN
+07:42:10  cam_out  Gusti   IN
+08:01:31  cam_out  Rizki   IN
+08:15:04  cam_out  UNKNOWN IN
+09:15:20  cam_in   Juris   OUT
+10:12:10  cam_in   Gusti   OUT
+11:30:20  cam_out  Gusti   IN
+12:10:32  cam_in   Gusti   OUT
+```
 
-REST API
+Sistem menghasilkan:
 
-↓
+```
+================================
+DAILY PEOPLE FLOW — 2026-09-08
+================================
 
-Dashboard
+Juris   IN: 1   OUT: 1   INSIDE: NO
+Gusti   IN: 2   OUT: 2   INSIDE: NO
+Rizki   IN: 1   OUT: 0   INSIDE: YES
+UNKNOWN IN: 1   OUT: 0
 
-↓
-
-Reporting
-
-↓
-
-Remote monitoring
-
-\`\`\`
+--------------------------------
+Current Occupancy : 1 known + 1 unknown = 2
+--------------------------------
+```

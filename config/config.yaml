@@ -1,0 +1,114 @@
+# People Flow + Face Recognition — runtime config.
+# Nothing operational is hard-coded in source; tune everything here.
+# Two-camera layout on one Jetson Nano 4GB (2x CSI IMX219-120):
+#   cam_out  -> mounted OUTSIDE the door, faces the approach  -> owns IN  events + identity of people entering
+#   cam_in   -> mounted INSIDE  the door, faces the approach  -> owns OUT events + identity of people leaving
+# During laptop development, point either camera at source: webcam | file.
+
+app:
+  name: people-flow
+  # frames per second the pipeline TARGETS per camera (walking speed at a door needs little)
+  target_fps: 8
+  # show annotated windows (dev only; headless on Jetson)
+  display: true
+
+logging:
+  level: INFO          # DEBUG | INFO | WARNING | ERROR
+  dir: logs
+  rotate_mb: 20
+  backups: 5
+
+cameras:
+  cam_out:
+    role: in           # this camera authoritatively emits IN events
+    source: webcam     # webcam | file | csi
+    webcam_index: 0
+    file_path: null     # used when source=file, e.g. data/probe/clip_out.mp4
+    csi_sensor_id: 0    # used when source=csi
+    width: 1280
+    height: 720
+    fps: 30
+    flip_method: 0      # nvvidconv flip-method for csi (0..7)
+    # lens undistortion — only meaningful for csi (120 deg barrel). Fill after Capaian 1b.
+    undistort: false
+    camera_matrix: null
+    dist_coeffs: null
+  cam_in:
+    role: out          # this camera authoritatively emits OUT events
+    # dev default: both read webcam 0 so `python main.py` runs on any laptop.
+    # real dual-cam dev: set source=file + file_path per camera, or csi on Jetson.
+    source: webcam
+    webcam_index: 0
+    file_path: null
+    csi_sensor_id: 1
+    width: 1280
+    height: 720
+    fps: 30
+    flip_method: 0
+    undistort: false
+    camera_matrix: null
+    dist_coeffs: null
+
+# --- counting: 2 parallel lines forming a band; sequence of crossings gives direction ---
+counting:
+  crossing_anchor: head        # head | body_centroid
+  min_track_len: 5             # frames a track must exist before it may generate an event
+  cooldown_s: 2.0              # per track_id, after an event, before the same track may emit again
+  confirm_frames: 3            # crossing must hold this many frames to count
+  # line coords are fractions of frame (x1,y1,x2,y2); set per camera in Capaian 1c
+  band:
+    cam_out:
+      outer: [0.0, 0.35, 1.0, 0.35]
+      inner: [0.0, 0.62, 1.0, 0.62]
+    cam_in:
+      outer: [0.0, 0.35, 1.0, 0.35]
+      inner: [0.0, 0.62, 1.0, 0.62]
+
+detection:
+  model: models/yolov8n.onnx   # person/head detector; swap to a CrowdHuman head model if crowds
+  input_size: 480
+  conf_threshold: 0.35
+  nms_iou: 0.7
+  classes: [person]
+
+tracking:
+  # ByteTrack-style knobs; big track_buffer bridges brief occlusion (tailgating)
+  track_buffer: 45
+  match_thresh: 0.8
+  high_thresh: 0.6
+  low_thresh: 0.1
+
+recognition:
+  model: models/arcface.onnx
+  align_size: 112
+  every_n_frames: 5            # do not embed every frame
+  min_face_px: 112
+  threshold: 0.45             # cosine similarity; CALIBRATE on door-cam probe (Capaian 1c+)
+  margin: 0.05                # top1 - top2 must exceed this, else UNKNOWN
+  roi: [0.2, 0.15, 0.8, 0.9]  # recognition search area, fraction of frame (center; wide-lens edges are noisy)
+  vote_window: 5              # majority vote over this many recognitions before locking identity to a track
+
+gallery:
+  embeddings_path: data/gallery/embeddings.npz
+  # store all per-sample embeddings + a per-person mean
+
+database:
+  sqlite_path: data/events.db
+  snapshot_dir: data/snapshots
+  keep_snapshots_days: 30
+
+# external HR/personnel DB — name + info by idpersonal. NEVER queried in the hot loop.
+personnel_db:
+  enabled: false
+  # DSN read from this env var, not stored here
+  dsn_env: PERSONNEL_PG_DSN
+  info_function: "person.get_info_person"   # SELECT * FROM person.get_info_person($1)
+  connect_timeout_s: 3
+  cache_table: persons_cache
+  refresh_interval_s: 3600
+
+privacy:
+  # PDP (UU 27/2022): biometric = specific personal data. Keep this honest.
+  store_face_crops: false      # store embeddings, not raw face images, where possible
+  retention_days_events: 365
+  notice_posted: false         # set true once entrance signage is up

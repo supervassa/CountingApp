@@ -1,0 +1,20 @@
+# data & models (large / private — faces)
+/raw/
+/dataset/
+/models/
+/data/
+/logs/
+
+# python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# editor / os
+/.idea/
+.DS_Store
+
+# claude worktrees
+/.claude/

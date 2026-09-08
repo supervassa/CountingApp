@@ -1,10 +1,13 @@
-# --- Capaian 0-1 (laptop dev) ---
+# --- runtime (laptop dev) ---
 numpy
 PyYAML
 opencv-python           # laptop only. On Jetson use the JetPack system cv2 (built with GStreamer/CUDA); do NOT pip-install this there.
 Pillow                  # scripts/ingest_raw.py
+onnxruntime             # Capaian 2 detection (+ Capaian 4 embedding). Jetson: onnxruntime-gpu wheel for JetPack, or TensorRT engine.
 
-# --- later capaian (add when reached; pin versions against JetPack R32.7.1 / Python 3.6 / CUDA 10.2 before Jetson) ---
-# onnxruntime           # Capaian 4 face embedding (laptop); Jetson: onnxruntime-gpu wheel for JetPack, or TensorRT
+# --- export / dev only (NOT runtime; pulls torch) ---
+# ultralytics           # scripts/export_yolo.py — one-time yolov8n.pt -> ONNX
+
+# --- later capaian (pin versions against JetPack R32.7.1 / Python 3.6 / CUDA 10.2 before Jetson) ---
 # scikit-learn          # Capaian 4 calibration / clustering
 # psycopg[binary]       # Capaian 6 personnel Postgres lookup (enrichment worker only)

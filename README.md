@@ -28,9 +28,14 @@ both check-in and check-out.
 ```bash
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/pip install ultralytics                       # export-only (pulls torch)
+./.venv/bin/python scripts/export_yolo.py --imgsz 480     # -> models/yolov8n.onnx
 ./.venv/bin/python main.py --check      # load + validate config/config.yaml
-./.venv/bin/python main.py              # run capture loop (needs a webcam)
+./.venv/bin/python main.py              # capture + detection (needs a webcam)
 ```
+
+`models/` is gitignored — regenerate `yolov8n.onnx` with `scripts/export_yolo.py`.
+Without it the capture loop still runs (detection logs "disabled").
 
 `config/config.yaml` holds everything tunable — cameras, lines, thresholds. Nothing
 operational is hard-coded.
@@ -43,7 +48,7 @@ operational is hard-coded.
 | 1 | Camera | dual-source capture (webcam/file/csi), stable FPS, clean shutdown |
 | 1b | Lens calibration | per-camera matrix + dist coeffs for the 120° barrel (CSI only) |
 | 1c | Site survey | mount cameras, record IN/OUT clips, set band lines + recog ROI per camera |
-| 2 | Detection | YOLO person/head boxes + confidence, FPS measured |
+| 2 | Detection | YOLOv8n via onnxruntime, shared across cameras; person boxes + confidence ✅ |
 | 3 | Tracking | stable `track_id`; 2 people parallel = 2 IDs; ID survives brief occlusion |
 | 4 | Face recognition | enrolled → idpersonal, others → `UNKNOWN`; threshold calibrated on door-cam probe |
 | 5 | Counting | 2-line band + direction filter; one crossing = one event; per-track cooldown |

@@ -1,7 +1,7 @@
-"""Capaian 1 orchestrator: open both cameras, pull frames, measure FPS.
+"""Pipeline orchestrator: open both cameras, pull frames, run detection.
 
-Detection / tracking / recognition / counting hang off process_frame() in later
-capaian. For now it just proves the dual-camera capture loop is stable.
+Tracking / recognition / counting hang off process_frame() in later capaian.
+One Detector instance is shared across both cameras (§5.3 PRD).
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import time
 import cv2
 
 from .camera.factory import build_camera
+from .detection.factory import build_detector
 
 log = logging.getLogger(__name__)
 
@@ -41,13 +42,32 @@ class Pipeline:
         self.meters = {name: FpsMeter() for name in self.cams}
         self._stop = False
 
+        # shared detector; keep running the capture loop even if the model is absent
+        self.detector = None
+        try:
+            self.detector = build_detector(cfg.detection)
+        except (FileNotFoundError, ImportError) as e:
+            log.warning("detection disabled: %s", e)
+
     def _install_signals(self):
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, lambda *_: setattr(self, "_stop", True))
 
     def process_frame(self, name, frame):
-        """Hook for later capaian (detect/track/recognize/count). No-op for now."""
-        return frame.image
+        """Detect on the frame, draw boxes. Tracking/recognition/counting later."""
+        img = frame.image
+        if self.detector is None:
+            return img
+        dets = self.detector.detect(img)
+        out = img.copy()
+        for d in dets:
+            x1, y1, x2, y2 = d.xyxy
+            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 200, 255), 2)
+            cv2.putText(out, f"{d.label} {d.score:.2f}", (x1, max(0, y1 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
+        if frame.index % 30 == 0:
+            log.info("[%s] frame %d: %d detection(s)", name, frame.index, len(dets))
+        return out
 
     def run(self):
         self._install_signals()

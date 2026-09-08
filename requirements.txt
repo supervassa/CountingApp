@@ -4,6 +4,7 @@ PyYAML
 opencv-python           # laptop only. On Jetson use the JetPack system cv2 (built with GStreamer/CUDA); do NOT pip-install this there.
 Pillow                  # scripts/ingest_raw.py
 onnxruntime             # Capaian 2 detection (+ Capaian 4 embedding). Jetson: onnxruntime-gpu wheel for JetPack, or TensorRT engine.
+scipy                   # Capaian 3 tracking — Kalman filter + linear assignment. Jetson: apt python3-scipy.
 
 # --- export / dev only (NOT runtime; pulls torch) ---
 # ultralytics           # scripts/export_yolo.py — one-time yolov8n.pt -> ONNX

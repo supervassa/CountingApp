@@ -49,7 +49,7 @@ operational is hard-coded.
 | 1b | Lens calibration | per-camera matrix + dist coeffs for the 120° barrel (CSI only) |
 | 1c | Site survey | mount cameras, record IN/OUT clips, set band lines + recog ROI per camera |
 | 2 | Detection | YOLOv8n via onnxruntime, shared across cameras; person boxes + confidence ✅ |
-| 3 | Tracking | stable `track_id`; 2 people parallel = 2 IDs; ID survives brief occlusion |
+| 3 | Tracking | ByteTrack per camera; stable `track_id` through crossing + short occlusion; `track_buffer` recovers gaps ✅ |
 | 4 | Face recognition | enrolled → idpersonal, others → `UNKNOWN`; threshold calibrated on door-cam probe |
 | 5 | Counting | 2-line band + direction filter; one crossing = one event; per-track cooldown |
 | 6 | Database | events persisted with timestamp + `camera_id` + `idpersonal`; personnel enrichment worker |

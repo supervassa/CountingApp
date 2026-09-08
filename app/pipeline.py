@@ -1,7 +1,8 @@
-"""Pipeline orchestrator: open both cameras, pull frames, run detection.
+"""Pipeline orchestrator: open both cameras, pull frames, detect, track.
 
-Tracking / recognition / counting hang off process_frame() in later capaian.
-One Detector instance is shared across both cameras (§5.3 PRD).
+Recognition / counting hang off process_frame() in later capaian.
+The Detector is shared across both cameras (§5.3 PRD); each camera keeps its
+own Tracker (state is per-camera).
 """
 from __future__ import annotations
 
@@ -13,8 +14,17 @@ import cv2
 
 from .camera.factory import build_camera
 from .detection.factory import build_detector
+from .tracking.factory import build_tracker
 
 log = logging.getLogger(__name__)
+
+# deterministic-ish colour per track id
+_PALETTE = [(66, 133, 244), (219, 68, 55), (244, 180, 0), (15, 157, 88),
+            (171, 71, 188), (0, 172, 193), (255, 112, 67), (158, 157, 36)]
+
+
+def _color(tid: int):
+    return _PALETTE[tid % len(_PALETTE)]
 
 
 class FpsMeter:
@@ -49,24 +59,38 @@ class Pipeline:
         except (FileNotFoundError, ImportError) as e:
             log.warning("detection disabled: %s", e)
 
+        # one tracker per camera
+        self.trackers = {name: build_tracker(cfg.tracking) for name in self.cams}
+
     def _install_signals(self):
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, lambda *_: setattr(self, "_stop", True))
 
     def process_frame(self, name, frame):
-        """Detect on the frame, draw boxes. Tracking/recognition/counting later."""
+        """Detect, then track. Recognition/counting hook in here later."""
         img = frame.image
         if self.detector is None:
             return img
         dets = self.detector.detect(img)
+        tracks = self.trackers[name].update(dets, img.shape)
+
         out = img.copy()
-        for d in dets:
-            x1, y1, x2, y2 = d.xyxy
-            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 200, 255), 2)
-            cv2.putText(out, f"{d.label} {d.score:.2f}", (x1, max(0, y1 - 6)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
+        for t in tracks:
+            x1, y1, x2, y2 = t.xyxy
+            col = _color(t.track_id)
+            cv2.rectangle(out, (x1, y1), (x2, y2), col, 2)
+            tag = f"#{t.track_id} {t.score:.2f}"
+            if t.time_since_update:
+                tag += f" (lost {t.time_since_update})"
+            cv2.putText(out, tag, (x1, max(12, y1 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
+            pts = list(t.trajectory)
+            for a, b in zip(pts, pts[1:]):
+                cv2.line(out, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), col, 2)
         if frame.index % 30 == 0:
-            log.info("[%s] frame %d: %d detection(s)", name, frame.index, len(dets))
+            log.info("[%s] frame %d: %d det -> %d track(s) %s",
+                     name, frame.index, len(dets), len(tracks),
+                     sorted(t.track_id for t in tracks))
         return out
 
     def run(self):

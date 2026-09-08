@@ -1,732 +1,378 @@
-# ****MASTER INSTRUCTION****
+# MASTER INSTRUCTION
 
-## ****AI People Flow & Face Recognition System****
+## AI People Flow + Face Recognition System (v2)
 
-Anda bertindak sebagai ****Senior AI/Computer Vision Engineer + Edge AI Engineer****. Bangun sistem penghitung orang masuk/keluar ruangan berbasis ****YOLO + ByteTrack + Face Recognition**** yang berjalan pada ****NVIDIA Jetson Nano 4GB****.
+Anda bertindak sebagai **Senior AI/Computer Vision Engineer + Edge AI Engineer**. Bangun sistem penghitung orang masuk/keluar gedung berbasis **YOLO + ByteTrack + Face Recognition** yang berjalan pada **NVIDIA Jetson Nano 4GB (B01)** dengan **2× kamera CSI IMX219-160**.
 
-## ****1\. Tujuan Sistem****
+Dokumen ini adalah instruksi kerja. Rujuk [PRD.md](PRD.md) untuk detail requirement.
 
-Sistem harus mampu:
+---
 
--   Mendeteksi orang melalui kamera.
--   Melacak orang antar-frame.
--   Mengenali identitas orang yang terdaftar.
--   Menentukan arah pergerakan melalui virtual line.
--   Mencatat event `IN` dan `OUT`.
--   Mencegah penghitungan ganda.
--   Menyimpan histori ke SQLite.
--   Menampilkan rekap harian per orang.
+## 1. Tujuan Sistem
+
+**Fitur utama: menghitung orang `IN`/`OUT` melalui satu pintu.**
+**Fitur tambahan (diminta pimpinan): pengenalan wajah** untuk menautkan identitas (`idpersonal`) ke setiap event — untuk mengurangi risiko kriminal dan (Fase 2) presensi kedinasan.
+
+Sistem harus:
+
+- Mendeteksi orang/kepala melalui 2 kamera.
+- Melacak orang antar-frame (per kamera).
+- Mengenali identitas orang terdaftar (identifikasi 1:N open-set) atau menandai `UNKNOWN`.
+- Menentukan arah pergerakan melalui pita dua garis virtual.
+- Mencatat event `IN` dan `OUT` dengan `idpersonal`/`UNKNOWN`, `camera_id`, timestamp sistem.
+- Mencegah penghitungan ganda (per track, per kamera, antar kamera).
+- Menyimpan histori ke SQLite lokal.
+- Mengambil nama/info orang dari PostgreSQL kepegawaian secara **asinkron** (di luar loop real-time).
+- Menampilkan rekap harian + occupancy.
 
 Contoh output:
 
-Juris  : IN 1 | OUT 1  
-Gusti  : IN 2 | OUT 2  
-Rizki  : IN 1 | OUT 1
+```
+[07:31:20] cam_out  a4f9… (Juris)  → IN
+[08:20:11] cam_in   a4f9… (Juris)  → OUT
+[08:41:05] cam_out  UNKNOWN        → IN
+```
 
-# ****2\. Arsitektur Utama****
+---
 
-Gunakan pipeline berikut dan jangan menggabungkan tanggung jawab antar-modul:
+## 2. Arsitektur Utama
 
-Camera  
-   ↓  
-Frame Capture  
-   ↓  
-YOLO Person Detection  
-   ↓  
-ByteTrack  
-   ↓  
-Face Detection / Face Alignment  
-   ↓  
-Face Embedding  
-   ↓  
-Gallery Matching  
-   ↓  
-Identity  
-   ↓  
-Virtual Line Crossing  
-   ↓  
-IN / OUT Event  
-   ↓  
-SQLite  
-   ↓  
-API / Dashboard
+```
+2× CSI Camera (IMX219-160)
+   ↓  (per kamera)
+Frame Capture  → (opsional) undistort lensa 160°
+   ↓
+YOLO Person/Head Detection
+   ↓
+ByteTrack
+   ↓
+Face Detection / Alignment  (setiap N frame, dalam ROI)
+   ↓
+Face Embedding (ArcFace)
+   ↓
+Gallery Matching (cosine, threshold + margin)
+   ↓
+Identity: idpersonal / UNKNOWN  → di-vote → dikunci ke track_id
+   ↓
+Virtual Line Crossing (pita 2 garis) + State Machine + Direction Filter
+   ↓
+IN / OUT Event
+   ↓
+SQLite lokal
+   ↓
+├─ Rekap harian / Occupancy / Cross-check antar kamera
+└─ Enrichment worker (asinkron) → PostgreSQL person.get_info_person($1) → persons_cache
+```
 
 Prinsip wajib:
 
 ```
 Detection ≠ Tracking ≠ Recognition ≠ Counting
+Counting INDEPENDEN dari Recognition
 ```
 
-Setiap komponen harus memiliki module/class yang terpisah.
+Setiap komponen = module/class terpisah. Recognition boleh gagal (`UNKNOWN`) tanpa merusak counting.
 
-# ****3\. Target Hardware****
+### Tata letak dua kamera
 
-Target utama:
+| Kamera | Pemasangan | Tanggung jawab |
+|---|---|---|
+| `cam_out` | luar pintu, menghadap approach luar | event `IN` + identitas orang masuk |
+| `cam_in` | dalam pintu, menghadap approach dalam | event `OUT` + identitas orang keluar |
 
-Device       : NVIDIA Jetson Nano 4GB  
-Architecture : ARM64 / aarch64  
-JetPack      : R32.7.1  
-CUDA         : 10.2  
-Python       : 3.6.9
+Satu kamera hanya melihat wajah satu arah — itu sebabnya perlu dua. Occupancy tunggal disuplai kedua kamera dengan filter arah + dedup `(waktu, arah)`.
 
-Jetson digunakan sebagai ****inference device****, bukan sebagai mesin training.
+---
 
-Optimalkan penggunaan:
-
--   RAM
--   VRAM
--   CPU
--   GPU
--   inference latency
-
-Prioritaskan model yang realistis untuk Jetson Nano 4GB.
-
-# ****4\. Model AI****
-
-## ****Person Detection****
-
-Gunakan YOLO untuk mendeteksi:
+## 3. Target Hardware
 
 ```
-class = person
+Device       : NVIDIA Jetson Nano 4GB (B01, 2 port CSI)
+Architecture : ARM64 / aarch64
+JetPack      : R32.7.1
+CUDA         : 10.2
+Python       : 3.6.9 (Jetson) / 3.9+ (laptop dev)
+Kamera       : 2× IMX219-160 CSI, 1280×720 atau 1920×1080
+Power        : barrel jack 5V/4A, mode 10W/MAXN
+Cooling      : kipas aktif wajib
 ```
 
-Jangan melakukan face recognition terhadap seluruh frame.
+Jetson = **inference device**, bukan mesin training. Optimalkan RAM, VRAM, CPU, GPU, latency. Kendala: FFC IMX219-160 ±15 cm → Jetson dalam ~1 m dari kamera.
 
-Face recognition hanya dilakukan pada area yang relevan untuk menghemat resource.
+**Pengembangan dilakukan di laptop dulu** (pipeline benar dulu), baru port ke Jetson + TensorRT. Modul `app/camera/` memakai `CameraSource` pluggable: `webcam` | `file` | `csi`.
 
-## ****Tracking****
+---
 
-Gunakan:
+## 4. Model AI
 
-```
-ByteTrack
-```
+### Person / Head Detection
 
-Tracking harus menghasilkan:
+- YOLO untuk kelas `person`. Untuk kondisi ramai, sediakan opsi model deteksi **kepala** (CrowdHuman) — kepala lebih terpisah dari atas.
+- Jangan face recognition ke seluruh frame — hanya ROI relevan.
 
-track\_id  
-bbox  
-confidence  
-trajectory
+### Tracking
 
-`track_id` tidak boleh dianggap sebagai identitas seseorang.
+- **ByteTrack**. Output: `track_id`, `bbox`, `confidence`, `trajectory`.
+- `track_buffer` besar (45–60 frame) untuk menjembatani occlusion singkat (tailgating).
+- `track_id` ≠ `idpersonal`. Dua informasi berbeda.
 
-Contoh:
+### Face Recognition — TANPA TRAINING
 
-track\_id = 17  
-identity = Juris
+- Pendekatan **face embedding** (bukan classifier per orang).
+- **Jangan latih / fine-tune model.** Model ArcFace pretrained dipakai apa adanya. Alasan: pretrained sudah general dari jutaan wajah; jumlah orang terdaftar tak cukup untuk training; enrollment ≠ training (enrollment hanya menghasilkan embedding untuk gallery).
+- Model kandidat: ArcFace / InsightFace (R50 / MobileFaceNet) format ONNX.
+- **Verifikasi kompatibilitas** dengan JetPack R32.7.1, CUDA 10.2, Python 3.6, ARM64 sebelum memilih implementasi final. Jangan asumsikan library modern kompatibel dengan Jetson Nano. `insightface` pip kemungkinan gagal di Python 3.6 — rencana cadangan: ONNX mentah + preprocessing manual.
 
-adalah dua informasi berbeda.
-
-# ****5\. Face Recognition****
-
-Gunakan pendekatan ****face embedding****, bukan classifier per orang.
-
-Pipeline:
-
-Face  
- ↓  
-Face Alignment  
- ↓  
-Face Embedding  
- ↓  
-Cosine Similarity  
- ↓  
-Gallery Matching  
- ↓  
-Identity / UNKNOWN
-
-Gunakan model pretrained yang sesuai, misalnya keluarga:
+### Identity Matching (1:N open-set)
 
 ```
-ArcFace / InsightFace
+query_embedding → cosine similarity ke seluruh gallery → top-k
+   keputusan: (top1 ≥ threshold) AND (top1 − top2 ≥ margin) → idpersonal
+              selain itu                                    → UNKNOWN
+   hasil di-vote (vote_window) sebelum dikunci ke track_id
 ```
 
-Namun sebelum memilih implementasi final, verifikasi kompatibilitas model/library dengan:
+- Mayoritas orang lewat TIDAK terdaftar → `UNKNOWN` harus sering & benar.
+- Jangan pilih identitas similarity tertinggi bila di bawah threshold.
+- Threshold + margin dari config, dikalibrasi (FAR/FRR/EER). Jangan hard-code.
 
-JetPack R32.7.1  
-CUDA 10.2  
-Python 3.6  
-ARM64
+---
 
-Jangan mengasumsikan library modern otomatis kompatibel dengan Jetson Nano.
+## 5. Enrollment
 
-# ****6\. Enrollment****
+- **Rekam ulang dengan IMX219** pada posisi pintu terpasang (domain cocok). Dataset lama `raw/` **di-shelve** (mayoritas 1 foto/orang, domain selfie) — hanya dipakai sebagai pool impostor untuk uji FAR. Audit: `scripts/ingest_raw.py`.
+- Target: **15–20 sampel/orang**, ditautkan ke `idpersonal` asli (dipilih dari daftar PostgreSQL).
+- Variasi: pose (frontal, yaw ±30°, pitch), ekspresi, kacamata, pencahayaan (normal/terang/redup/backlight), jarak (~1/2/3 m). Jangan 20 foto identik.
+- Quality check otomatis: confidence detector, ketajaman (var-of-Laplacian), ukuran wajah ≥ 112 px, yaw/pitch < 30°, exposure wajar, dedup (cosine > 0,97 ditolak).
+- Simpan **semua** embedding per-sample + mean embedding per orang di `data/gallery/embeddings.npz`.
+- Enrollment di-gate ke Capaian 1c (kamera harus terpasang). Sebelum itu, dev pakai webcam.
 
-Enrollment dilakukan melalui aplikasi mobile:
-
-Flutter Android  
-Flutter iOS
-
-Flow:
-
-Register Person  
-      ↓  
-Capture Face Samples  
-      ↓  
-Quality Check  
-      ↓  
-Upload  
-      ↓  
-Generate Embedding  
-      ↓  
-Store Face Gallery
-
-Target awal:
+### Gallery vs Probe
 
 ```
-15–20 sample/person
+dataset/gallery/            enrollment 15–20/orang
+dataset/probe/calib/        kalibrasi threshold
+dataset/probe/test/         metrik final — JANGAN disentuh saat kalibrasi
+        {clean,pose,illumination,occlusion,combined}/
 ```
 
-Sample harus memiliki variasi:
+---
 
--   frontal
--   kiri
--   kanan
--   sedikit atas
--   sedikit bawah
--   ekspresi berbeda
--   pencahayaan berbeda
--   jarak berbeda
--   kondisi penggunaan sebenarnya
-
-Jangan mengambil 20 foto yang hampir identik.
-
-# ****7\. Gallery dan Probe****
-
-Pisahkan:
-
-Gallery  
-Probe/Test
-
-Gallery digunakan untuk enrollment.
-
-Probe digunakan untuk menguji sistem.
-
-Contoh:
-
-gallery/  
-    juris/  
-    gusti/  
-    rizki/  
-  
-probe/  
-    clean/  
-    pose/  
-    illumination/  
-    occlusion/  
-    combined/
-
-Jangan menggunakan seluruh data testing sebagai gallery karena dapat menyebabkan evaluasi tidak valid.
-
-# ****8\. Training****
-
-Jangan melakukan training model utama di Jetson Nano.
-
-Gunakan:
-
-PC GPU  
-Kaggle GPU  
-Cloud GPU
-
-untuk:
-
--   training
--   fine-tuning
--   eksperimen
--   evaluasi
--   export ONNX
-
-Kemudian:
-
-ONNX  
- ↓  
-TensorRT  
- ↓  
-Jetson Nano
-
-Jika model pretrained sudah cukup baik, ****jangan melakukan training tambahan tanpa alasan eksperimental yang jelas****.
-
-Enrollment seseorang bukan training model.
-
-Enrollment hanya menghasilkan:
+## 6. Line Crossing — Pita Dua Garis
 
 ```
-face embedding
+─────────── garis LUAR    urutan LUAR→DALAM = IN
+   (pita)
+─────────── garis DALAM   urutan DALAM→LUAR = OUT
 ```
 
-yang kemudian dimasukkan ke gallery.
+- Arah dari **urutan crossing**, bukan posisi satu frame. Pakai trajectory/centroid.
+- Anchor = **kepala** (`counting.crossing_anchor`), bukan pusat bbox badan.
+- Koordinat garis = fraksi frame, di-set per kamera pada Capaian 1c. Jangan hard-code.
+- Poligon zona (inside/outside, walk-in/walk-out/pass-by) = alternatif setara, murni geometri gambar.
 
-# ****9\. Identity Matching****
-
-Gunakan cosine similarity.
-
-Konsep:
-
-query\_embedding  
-        ↓  
-compare  
-        ↓  
-gallery embeddings  
-        ↓  
-highest similarity  
-        ↓  
-threshold  
-        ↓  
-identity / UNKNOWN
-
-Jangan selalu memilih identity dengan similarity tertinggi.
-
-Contoh:
-
-Juris   0.91  
-Gusti   0.62  
-Rizki   0.55
-
-Jika threshold = `0.70`:
+### State machine (per track)
 
 ```
-Juris
+UNKNOWN → OUTSIDE → (crossing pita) → INSIDE → (crossing pita) → OUTSIDE
 ```
 
-Jika:
+Event hanya saat transisi valid: `OUTSIDE→INSIDE` di `cam_out` = `IN`; `INSIDE→OUTSIDE` di `cam_in` = `OUT`.
 
-Juris   0.61  
-Gusti   0.59  
-Rizki   0.54
+---
 
-hasil:
+## 7. Anti Double Counting
 
-```
-UNKNOWN
-```
+Implementasikan **semua**:
 
-Threshold harus dapat dikonfigurasi dan dievaluasi menggunakan dataset validation.
+- tracking (`track_id` stabil);
+- multi-frame confirmation (`counting.confirm_frames`);
+- `min_track_len` sebelum boleh menghasilkan event;
+- **cooldown per `track_id`** setelah event (`counting.cooldown_s`) — JANGAN cooldown global (dua orang beriringan 0,5 detik akan terbuang);
+- identity confidence (similarity rendah tidak dicatat sebagai identitas valid);
+- **dedup antar kamera**: occupancy tunggal + filter arah + dedup `(waktu, arah)`;
+- track lahir di tengah / lewat garis tanpa histori approach → jangan langsung hitung, atau hitung sebagai `UNKNOWN` low-confidence.
 
-# ****10\. Line Crossing****
+**Event diproses per-track independen tiap frame.** Tidak ada "satu event dalam satu waktu". Dua orang nyebrang bareng = dua transisi = dua event.
 
-Gunakan virtual line:
+---
 
-\-------------------------  
-        LINE  
-\-------------------------
+## 8. Skenario Banyak Orang
 
-Tentukan dua area:
+| Skenario | Counting | Recognition |
+|---|---|---|
+| Satu-satu | ~97–99% | baik |
+| Beriringan rapat | ~90–95% (tracker di-tune) | orang belakang → `UNKNOWN`, tetap terhitung |
+| Gerombolan padat | turun signifikan | mayoritas gagal |
 
-OUTSIDE  
-INSIDE
+Batas fundamental kamera tunggal per arah. Mitigasi kode: deteksi kepala + tracker anti-occlusion + konfirmasi multi-frame + cooldown per track. Mitigasi fisik terkuat: persempit pintu jadi jalur satu-satu. **Ukur** per skenario pada probe kamera-pintu (missed/false/duplicate count, ID switch, identity accuracy) — jangan diasumsikan.
 
-Aturan:
+---
 
-OUTSIDE → INSIDE = IN  
-  
-INSIDE → OUTSIDE = OUT
+## 9. Database
 
-Gunakan trajectory/centroid tracking, bukan hanya posisi satu frame.
+### 9.1 SQLite lokal (offline-first)
 
-# ****11\. Anti Double Counting****
+Tabel: `persons`, `events`, `occupancy_state`, `persons_cache`. Skema lengkap di [PRD.md §14.1](PRD.md). Poin penting:
 
-Sistem tidak boleh menghitung seseorang berkali-kali hanya karena berada dekat line.
+- `events` menyimpan `idpersonal` (NULL bila UNKNOWN), `identity`, `event_type`, `camera_id`, `similarity`, `all_scores` (JSON top-k untuk re-kalibrasi), `track_id`, `timestamp` (waktu **sistem**, bukan client), `date`, `image_path`.
+- Embedding di `data/gallery/embeddings.npz`, bukan BLOB tabel.
 
-Implementasikan:
+### 9.2 PostgreSQL kepegawaian (eksternal)
 
--   tracking
--   multi-frame confirmation
--   trajectory history
--   crossing state
--   event cooldown
--   identity confidence
+- `SELECT * FROM person.get_info_person($1)` dengan `$1 = idpersonal`.
+- **Tidak pernah** di jalur real-time. Worker enrichment asinkron: `idpersonal` baru → panggil fungsi → `persons_cache`.
+- Aturan: DSN dari env var (bukan source/git); user **read-only**; **selalu parameterized** (`$1`); validasi `idpersonal` = UUID valid dulu; timeout pendek + retry backoff + circuit breaker; TLS bila lewat jaringan.
+- Dashboard/laporan = JOIN `events × persons_cache`. PostgreSQL putus → event tetap tercatat, nama menyusul.
 
-Contoh state:
+---
 
-UNKNOWN  
-   ↓  
-OUTSIDE  
-   ↓  
-CROSSING  
-   ↓  
-INSIDE
+## 10. Daily Summary & Occupancy
 
-atau:
+Format: `idpersonal | Nama | IN | OUT | Current Status`. Status dari event terakhir (`occupancy_state`). Occupancy dibedakan known vs unknown. Akhir hari: `idpersonal` yang masih `INSIDE` dengan `last_event='IN'` = anomali → laporkan.
 
-INSIDE  
-   ↓  
-CROSSING  
-   ↓  
-OUTSIDE
+---
 
-Event hanya dibuat ketika transisi valid terjadi.
+## 11. Cross-check Antar Kamera
 
-# ****12\. Event Database****
+Occupancy versi `cam_out` dan `cam_in` harus konsisten dengan occupancy gabungan. Selisih > ambang → alarm (crossing terlewat / kamera bergeser / terhalang).
 
-Gunakan SQLite pada tahap awal.
+---
 
-Minimal tabel:
+## 12. Privasi (WAJIB)
 
-persons  
-events
+Pemrosesan biometrik di bawah UU PDP No. 27/2022. Terapkan:
 
-### ****persons****
+- papan pemberitahuan di pintu;
+- kebijakan retensi terdokumentasi (`privacy.retention_days_events`, `database.keep_snapshots_days`);
+- simpan embedding, bukan foto wajah mentah, bila memungkinkan;
+- purpose limitation;
+- kontrol akses DB; user PostgreSQL read-only;
+- enrollment hanya untuk orang yang memberi persetujuan.
 
-id  
-name  
-external\_id  
-embedding  
-created\_at  
-updated\_at
+---
 
-### ****events****
+## 13. Performance
 
-id  
-person\_id  
-identity  
-event\_type  
-confidence  
-timestamp  
-date  
-track\_id  
-image\_path
-
-`event_type`:
-
-IN  
-OUT
-
-Timestamp event harus berasal dari sistem dan tidak boleh menggunakan waktu yang dimanipulasi oleh client.
-
-# ****13\. Daily Summary****
-
-Sistem harus dapat menghasilkan:
+Target engineering awal (Jetson Nano 4GB, **2 kamera**):
 
 ```
-Person | IN | OUT | Current Status
+Detection      : ≥ 8 FPS (engine di-share, bergantian antar kamera)
+Pipeline/kamera : ≥ 5 FPS efektif
+Recognition    : ≤ 300 ms/wajah, tiap every_n_frames
+RAM            : ≤ 3 GB (satu set engine di-share)
+Precision      : FP16 (TensorRT)
 ```
 
-Contoh:
+Target engineering, bukan jaminan. Bila rendah, berurutan: turunkan resolusi → optimalkan YOLO → TensorRT → FP16 → kurangi frekuensi recognition → frame skipping → batasi ROI → frame stagger antar kamera. Jangan ganti arsitektur tanpa profiling.
 
-Juris | 1 | 1 | OUTSIDE  
-Gusti | 2 | 2 | OUTSIDE  
-Rizki | 1 | 0 | INSIDE
+---
 
-Current status dapat ditentukan berdasarkan event terakhir.
+## 14. Struktur Project
 
-# ****14\. Unknown Person****
-
-Jika wajah tidak dapat dikenali:
+Lihat [PRD.md §22](PRD.md). Ringkas:
 
 ```
-identity = UNKNOWN
+main.py  config/config.yaml
+app/{config,logging_setup,pipeline}.py
+app/camera/{base,webcam,filesource,csi,factory}.py
+app/{detection,tracking,recognition,counting,database,enrollment}/
+scripts/ingest_raw.py   tests/   models/   data/   dataset/   logs/
 ```
 
-Jangan memaksakan identitas terdekat.
-
-Sistem harus membedakan:
+Jangan buat satu file Python besar untuk seluruh pipeline.
 
-Known Person  
-Unknown Person  
-No Face  
-Low Confidence
+---
 
-# ****15\. Performance****
+## 15. Strategy Pengembangan (Capaian)
 
-Target awal engineering:
+Bertahap. Setiap capaian menghasilkan sistem yang bisa dijalankan + diuji.
 
-Input          : 640x480 atau 1280x720  
-Detection FPS  : ≥ 8 FPS  
-Pipeline FPS   : ≥ 5 FPS  
-Recognition    : ≤ 300 ms  
-RAM            : ≤ 3 GB  
-Precision      : FP16 jika memungkinkan
+| # | Capaian | Fokus |
+|---|---|---|
+| 0 | Scaffold | struktur, config loader + validasi, `main.py --check`, tests |
+| 1 | Camera | `CameraSource` dual-source, FPS stabil, shutdown bersih, recover |
+| 1b | Kalibrasi lensa | matrix + dist_coeffs per kamera (CSI, barrel 160°) |
+| 1c | Site survey | kamera terpasang, rekam klip semua skenario, set garis + ROI |
+| 2 | Detection | YOLO person/head, engine di-share |
+| 3 | Tracking | ByteTrack, ID stabil, tahan occlusion singkat, ukur ID switch |
+| 4 | Face Recognition | enroll IMX219, matching 1:N, kalibrasi threshold pada probe kamera-pintu |
+| 5 | Counting | pita 2 garis + state machine + filter arah + cooldown per track + dedup antar kamera |
+| 6 | Database | event + timestamp sistem + camera_id + idpersonal; worker enrichment PostgreSQL |
+| 7 | Daily Summary | rekap per idpersonal + occupancy known/unknown + anomali |
+| 8 | Optimization | ONNX→TensorRT FP16, engine di-share, 2 kamera dalam anggaran Nano |
+| 9 | Cross-check | occupancy cam_out vs cam_in + alarm |
 
-Angka tersebut adalah ****target engineering****, bukan jaminan performa.
+Jangan implementasi seluruh sistem sekaligus.
 
-Jika performa rendah:
+---
 
-1.  turunkan resolusi
-2.  optimalkan YOLO
-3.  gunakan TensorRT
-4.  gunakan FP16
-5.  kurangi frekuensi face recognition
-6.  gunakan tracking antar-frame
-7.  batasi ROI
-8.  kurangi ukuran input model
+## 16. Testing
 
-Jangan langsung mengganti seluruh arsitektur tanpa profiling.
+Setiap module diuji independen.
 
-# ****16\. Struktur Project****
+- **Detection:** accuracy, false detection, missed detection.
+- **Tracking:** ID switch, lost track, multiple people, occlusion.
+- **Recognition:** known, unknown, pose, illumination, occlusion, distance.
+- **Counting:** IN, OUT, reversal, multiple people, crossing simultan, tailgating, gerombolan.
+- **System:** duplicate event, camera disconnect, database failure, PostgreSQL failure, low FPS, Jetson memory pressure, cross-camera occupancy drift.
 
-Gunakan struktur modular:
+---
 
-people-flow/  
-│  
-├── app/  
-│   ├── camera/  
-│   ├── detection/  
-│   ├── tracking/  
-│   ├── recognition/  
-│   ├── counting/  
-│   ├── database/  
-│   ├── enrollment/  
-│   └── api/  
-│  
-├── models/  
-│   ├── yolo/  
-│   ├── face/  
-│   └── tensorrt/  
-│  
-├── config/  
-│   └── config.yaml  
-│  
-├── data/  
-│   ├── gallery/  
-│   └── snapshots/  
-│  
-├── tests/  
-│  
-├── scripts/  
-│  
-├── main.py  
-├── requirements.txt  
-└── README.md
+## 17. Evaluation — pisahkan dua level
 
-Jangan membuat satu file Python besar yang menangani seluruh pipeline.
+**Face recognition:** Accuracy, Precision, Recall, FAR, FRR, ROC, AUC, EER, TAR@FAR — dilaporkan pada `probe/test/` (bukan `calib/`).
 
-# ****17\. Development Strategy****
+**People counting:** IN accuracy, OUT accuracy, Missed count, False count, Duplicate count, ID switch — per skenario §8.
 
-Implementasikan secara bertahap.
+Jangan campur evaluasi face recognition dan people-flow counting.
 
-### ****Phase 1****
+---
 
-Camera:
+## 18. Coding Rules
 
-```
-Camera → Frame
-```
+1. Jangan asumsikan library yang belum diverifikasi (terutama kompatibilitas Jetson Nano).
+2. Prioritaskan kompatibilitas Jetson Nano. Kriteria pilih library: Compatibility → Performance → Memory → Accuracy → Maintenance. Jangan pilih karena paling populer/baru.
+3. Dependency seminimal mungkin.
+4. Konfigurasi terpisah dari source (`config/config.yaml`).
+5. Jangan hard-code threshold, margin, koordinat garis, ROI.
+6. Jangan simpan API key / password / DSN di source atau git — pakai environment variable.
+7. Query PostgreSQL selalu parameterized (`$1`). Validasi `idpersonal` = UUID.
+8. Timestamp event dari sistem, bukan client.
+9. Tambahkan logging + error handling di setiap modul. Kode dapat di-debug.
+10. Jangan premature optimization. Profiling sebelum optimasi.
+11. Setiap perubahan arsitektur harus punya alasan teknis.
+12. Jangan hapus fitur existing tanpa alasan + konfirmasi.
+13. Jangan ubah environment Jetson secara destruktif.
+14. Di Jetson: pakai OpenCV sistem (build JetPack dengan GStreamer + CUDA). JANGAN `pip install opencv-python` di Jetson.
+15. Counting tidak boleh bergantung pada Recognition.
 
-Pastikan FPS stabil.
+---
 
-### ****Phase 2****
-
-Detection:
-
-```
-Camera → YOLO → Bounding Box
-```
-
-### ****Phase 3****
-
-Tracking:
-
-```
-YOLO → ByteTrack → track_id
-```
-
-### ****Phase 4****
-
-Recognition:
-
-```
-Face → Embedding → Identity
-```
-
-### ****Phase 5****
-
-Counting:
-
-```
-Tracking → Line Crossing → IN/OUT
-```
-
-### ****Phase 6****
-
-Database:
-
-```
-IN/OUT → SQLite
-```
-
-### ****Phase 7****
-
-Dashboard/API:
-
-```
-SQLite → API → Dashboard
-```
-
-### ****Phase 8****
-
-Optimization:
-
-```
-Profiling → TensorRT → FP16 → Optimization
-```
-
-Jangan mengimplementasikan seluruh sistem sekaligus.
-
-# ****18\. Testing****
-
-Setiap module harus dapat diuji secara independen.
-
-Minimal testing:
-
-### ****Detection****
-
-person detection accuracy  
-false detection  
-missed detection
-
-### ****Tracking****
-
-ID switch  
-lost track  
-multiple people  
-occlusion
-
-### ****Recognition****
-
-known person  
-unknown person  
-pose  
-illumination  
-occlusion  
-distance
-
-### ****Counting****
-
-IN  
-OUT  
-reversal  
-multiple people  
-crossing simultaneously
-
-### ****System****
-
-duplicate event  
-camera disconnect  
-database failure  
-low FPS  
-Jetson memory pressure
-
-# ****19\. Evaluation****
-
-Face recognition:
-
-Accuracy  
-Precision  
-Recall  
-FAR  
-FRR  
-ROC  
-AUC  
-EER  
-TAR@FAR
-
-People counting:
-
-IN Accuracy  
-OUT Accuracy  
-Missed Count  
-False Count  
-Duplicate Count  
-ID Switch
-
-Pisahkan evaluasi ****face recognition**** dan ****people-flow counting****.
-
-# ****20\. Coding Rules****
-
-Saat menulis kode:
-
-1.  Jangan membuat asumsi tentang library yang belum diverifikasi.
-2.  Prioritaskan kompatibilitas Jetson Nano.
-3.  Gunakan dependency seminimal mungkin.
-4.  Pisahkan konfigurasi dari source code.
-5.  Jangan hard-code threshold.
-6.  Jangan hard-code koordinat line.
-7.  Jangan menyimpan API key/password di source code.
-8.  Tambahkan logging.
-9.  Tambahkan error handling.
-10.  Buat kode yang dapat di-debug.
-11.  Jangan melakukan premature optimization.
-12.  Profiling dilakukan sebelum optimasi.
-13.  Setiap perubahan arsitektur harus memiliki alasan teknis.
-14.  Jangan menghapus fitur existing tanpa alasan dan konfirmasi.
-15.  Jangan mengubah environment Jetson secara destruktif.
-
-# ****21\. Aturan Khusus AI Coding Agent****
+## 19. Aturan Khusus AI Coding Agent
 
 Sebelum membuat kode:
 
-1.  Periksa struktur project yang sudah ada.
-2.  Periksa versi Python.
-3.  Periksa CUDA.
-4.  Periksa TensorRT.
-5.  Periksa OpenCV.
-6.  Periksa dependency yang sudah terinstall.
-7.  Identifikasi library yang kompatibel dengan Jetson Nano.
-8.  Jelaskan dependency baru sebelum memasangnya.
+1. Periksa struktur project yang ada.
+2. Periksa versi Python, CUDA, TensorRT, OpenCV, GStreamer.
+3. Periksa dependency terinstall.
+4. Identifikasi library kompatibel Jetson Nano.
+5. Jelaskan dependency baru sebelum memasang.
 
-Jika terdapat beberapa alternatif library/model, pilih berdasarkan:
-
-Compatibility  
-→ Performance  
-→ Memory usage  
-→ Accuracy  
-→ Maintenance
-
-Jangan memilih library hanya karena paling populer atau paling baru.
-
-Sebelum melakukan perubahan besar, jelaskan:
-
-Problem  
-Cause  
-Proposed Solution  
-Impact
+Sebelum perubahan besar, jelaskan: **Problem → Cause → Proposed Solution → Impact.**
 
 Setiap tahap harus menghasilkan sistem yang dapat dijalankan dan diuji.
 
-# ****22\. Prinsip Utama****
+---
 
-Sistem ini bukan sekadar:
+## 20. Prinsip Utama
+
+Sistem ini bukan sekadar `YOLO = people counter`. Melainkan:
 
 ```
-YOLO = people counter
+Camera → WHO IS THERE? → TRACK → WHO IS THE PERSON? (idpersonal/UNKNOWN)
+       → WHERE ARE THEY GOING? → DID THEY CROSS THE BAND?
+       → IN / OUT → STORE EVENT → (async) RESOLVE NAME → REPORT
 ```
 
-Tetapi:
-
-YOLO  
-  ↓  
-WHO IS THERE?  
-  ↓  
-TRACK  
-  ↓  
-WHO IS THE PERSON?  
-  ↓  
-WHERE ARE THEY GOING?  
-  ↓  
-DID THEY CROSS THE LINE?  
-  ↓  
-IN / OUT  
-  ↓  
-STORE EVENT
-
-Target akhir:
-
-Camera  
-   ↓  
-Detect  
-   ↓  
-Track  
-   ↓  
-Recognize  
-   ↓  
-Determine Direction  
-   ↓  
-Generate Event  
-   ↓  
-Store  
-   ↓  
-Report
-
-Semua implementasi harus mempertahankan arsitektur tersebut.
+Semua implementasi mempertahankan arsitektur tersebut, dengan **Counting sebagai fitur utama yang tidak boleh gagal** dan **Recognition sebagai lapisan pengaya yang boleh menghasilkan `UNKNOWN`**.

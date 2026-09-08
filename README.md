@@ -57,6 +57,25 @@ operational is hard-coded.
 | 9 | Cross-check | `cam_out` vs `cam_in` consistency alarms (negative / too-high occupancy, silent camera) → WARNING log + `alarms` table, rate-limited ✅ |
 | 8 | Optimization | ONNX → TensorRT FP16, shared engines, 2-cam within Nano budget (on Jetson) |
 
+## Status
+
+Capaian 0, 1, 2, 3, 5, 6, 7, 9 are built and tested (27 tests, `main.py --check` OK).
+The remaining ones need physical hardware:
+
+- **1b lens calibration** — once the cameras are mounted: capture a checkerboard,
+  fill `cameras.<cam>.camera_matrix` / `dist_coeffs`, set `undistort: true`.
+- **1c site survey** — mount both cameras, record IN/OUT and crowd clips, then set
+  `counting.band.<cam>` lines and `recognition.roi` per camera from those clips.
+- **4 face recognition** — not built yet. Needs face detect + align (112px), an
+  ArcFace ONNX embedder, a gallery (`data/gallery/embeddings.npz`), a cosine
+  matcher (threshold + margin), and vote-and-lock of identity onto a `track_id`.
+  Enrollment (`app/enrollment/`) captures 15–20 shots per person from the mounted
+  IMX219, keyed to their `idpersonal`; the threshold is calibrated on a door-cam
+  probe (FAR/FRR/EER). Turn on `personnel_db` with credentials + the column list
+  from `person.get_info_person()` for names.
+- **8 optimization** — on the Jetson: ONNX → TensorRT FP16, shared engines, verify
+  the 2-camera pipeline fits the Nano budget.
+
 ## Enrollment
 
 Fresh capture from the mounted IMX219 (domain-matched), 15–20 varied shots per person,
@@ -67,14 +86,20 @@ per person, selfie domain) — kept only as a potential impostor pool for FAR te
 ## Repo layout
 
 ```
-main.py                 entry point
-config/config.yaml      all runtime tuning
+main.py                 entry point (run | --check | --summary)
+config/config.yaml      all runtime tuning (cameras, band lines, thresholds, personnel_db)
 app/
   config.py             load + validate yaml
   logging_setup.py
-  pipeline.py           capture orchestrator (detect/track/recog/count hang off here)
-  camera/               base.py + webcam / filesource / csi + factory
-  detection/ tracking/ recognition/ counting/ database/ enrollment/   (stubs)
-scripts/ingest_raw.py   legacy dataset audit
-tests/test_config.py
+  pipeline.py           orchestrator: capture -> detect -> track -> crossing -> occupancy -> db
+  camera/               CameraSource: webcam / filesource / csi (GStreamer) + factory
+  detection/            Detector + YoloOnnxDetector + factory
+  tracking/             Tracker + ByteTracker + Kalman + factory
+  counting/             band, counter (state machine), occupancy, crosscheck + factory
+  database/             schema.sql, repository, enrichment worker + factory
+  recognition/ enrollment/   (Capaian 4 — not built yet)
+scripts/
+  ingest_raw.py         legacy dataset audit
+  export_yolo.py        yolov8n.pt -> ONNX (one-time)
+tests/                  config, bytetrack, counting, crosscheck, database  (27 tests)
 ```

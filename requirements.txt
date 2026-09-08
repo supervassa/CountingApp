@@ -9,6 +9,8 @@ scipy                   # Capaian 3 tracking — Kalman filter + linear assignme
 # --- export / dev only (NOT runtime; pulls torch) ---
 # ultralytics           # scripts/export_yolo.py — one-time yolov8n.pt -> ONNX
 
+# --- optional (install when the feature is turned on) ---
+# psycopg[binary]       # personnel_db.enabled=true — enrichment worker's PostgreSQL lookup
+
 # --- later capaian (pin versions against JetPack R32.7.1 / Python 3.6 / CUDA 10.2 before Jetson) ---
 # scikit-learn          # Capaian 4 calibration / clustering
-# psycopg[binary]       # Capaian 6 personnel Postgres lookup (enrichment worker only)

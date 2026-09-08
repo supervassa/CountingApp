@@ -24,7 +24,7 @@ class Occupancy:
         self.inside: dict[str, float] = {}      # key -> entry ts
         self._recent: list[tuple[str, str, float]] = []  # (direction, idpersonal, ts)
 
-    def _key(self, ev) -> str:
+    def key(self, ev) -> str:
         return ev.idpersonal or f"{ev.camera_id}:{ev.track_id}"
 
     def _dup(self, ev) -> bool:
@@ -39,9 +39,9 @@ class Occupancy:
     def apply(self, ev) -> bool:
         """Returns True if the event was counted, False if deduped."""
         if self._dup(ev):
-            log.debug("occupancy: deduped %s %s", ev.direction, self._key(ev))
+            log.debug("occupancy: deduped %s %s", ev.direction, self.key(ev))
             return False
-        key = self._key(ev)
+        key = self.key(ev)
         if ev.direction == "IN":
             self.total_in += 1
             self.inside[key] = ev.ts
@@ -49,6 +49,14 @@ class Occupancy:
             self.total_out += 1
             self.inside.pop(key, None)
         return True
+
+    def load(self, keys) -> None:
+        """Restore the live tally from occupancy_state on restart. `keys` is an
+        iterable of (key, entered_at)."""
+        for key, entered in keys:
+            self.inside[key] = entered
+        if self.inside:
+            log.info("occupancy restored: %d already inside", len(self.inside))
 
     @property
     def current(self) -> int:

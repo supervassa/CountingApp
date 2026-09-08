@@ -9,11 +9,13 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from datetime import datetime
 
 import cv2
 
 from .camera.factory import build_camera
 from .counting.factory import build_counter, build_occupancy
+from .database.factory import build_enrichment, build_repository
 from .detection.factory import build_detector
 from .tracking.factory import build_tracker
 
@@ -68,6 +70,11 @@ class Pipeline:
         }
         self.occupancy = build_occupancy(cfg.counting)
 
+        # local SQLite + async personnel-name enrichment (PostgreSQL, off by default)
+        self.repo = build_repository(cfg.database)
+        self.occupancy.load(self.repo.inside_keys())        # survive a restart
+        self.enrichment = build_enrichment(cfg.personnel_db, self.repo)
+
     def _install_signals(self):
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, lambda *_: setattr(self, "_stop", True))
@@ -82,6 +89,13 @@ class Pipeline:
 
         for ev in self.counters[name].update(tracks, img.shape, frame.ts):
             counted = self.occupancy.apply(ev)
+            if counted:
+                key = self.occupancy.key(ev)
+                self.repo.insert_event(ev, ts=datetime.fromtimestamp(ev.ts))
+                if ev.direction == "IN":
+                    self.repo.set_inside(key, ev.idpersonal)
+                else:
+                    self.repo.clear_inside(key)
             log.info("[%s] EVENT %s #%d %s | %s", name, ev.direction, ev.track_id,
                      "counted" if counted else "deduped", self.occupancy.summary())
 
@@ -116,6 +130,7 @@ class Pipeline:
 
     def run(self):
         self._install_signals()
+        self.enrichment.start()
         for cam in self.cams.values():
             cam.open()
         display = bool(getattr(self.cfg.app, "display", False))
@@ -151,4 +166,6 @@ class Pipeline:
                 cam.release()
             if display:
                 cv2.destroyAllWindows()
-            log.info("pipeline stopped")
+            self.enrichment.stop()
+            self.repo.close()
+            log.info("pipeline stopped | %s", self.occupancy.summary())

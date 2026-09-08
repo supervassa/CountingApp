@@ -51,8 +51,8 @@ operational is hard-coded.
 | 2 | Detection | YOLOv8n via onnxruntime, shared across cameras; person boxes + confidence ✅ |
 | 3 | Tracking | ByteTrack per camera; stable `track_id` through crossing + short occlusion; `track_buffer` recovers gaps ✅ |
 | 5 | Counting | 2-line band + per-track state machine + direction filter (cam_out=IN, cam_in=OUT) + per-track cooldown + occupancy; one crossing = one event ✅ |
+| 6 | Database | SQLite events (system time, `camera_id`, `idpersonal`) + occupancy_state (survives restart); async PostgreSQL enrichment worker → persons_cache (off by default); `main.py --summary` ✅ |
 | 4 | Face recognition | enrolled → idpersonal, others → `UNKNOWN`; threshold calibrated on door-cam probe (after cameras mounted) |
-| 6 | Database | events persisted with timestamp + `camera_id` + `idpersonal`; personnel enrichment worker |
 | 7 | Daily summary | per-person IN/OUT/status; occupancy |
 | 8 | Optimization | ONNX → TensorRT FP16, shared engines, 2-cam within Nano budget |
 | 9 | Cross-check | occupancy from `cam_out` vs `cam_in` agree; alarm on drift |

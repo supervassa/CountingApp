@@ -1,24 +1,50 @@
 #!/usr/bin/env python3
 """Entry point.
 
-  python main.py                      # uses config/config.yaml
+  python main.py                      # run the pipeline (uses config/config.yaml)
   python main.py -c config/dev.yaml
-  python main.py --check              # load+validate config, then exit (Capaian 0)
+  python main.py --check              # load+validate config, then exit
+  python main.py --summary [DATE]     # print the daily people-flow summary (default: today)
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
+from datetime import datetime
 
 from app.config import load_config
 from app.logging_setup import setup_logging
+
+
+def _print_summary(cfg, date: str | None) -> int:
+    from app.database.factory import build_repository
+
+    repo = build_repository(cfg.database)
+    try:
+        date = date or datetime.now().strftime("%Y-%m-%d")
+        rows = repo.daily_summary(date)
+        occ = repo.occupancy()
+        print(f"\n==== DAILY PEOPLE FLOW — {date} ====")
+        if not rows:
+            print("  (no events)")
+        for r in rows:
+            who = r["name"] or r["identity"]
+            tag = f" ({r['idpersonal']})" if r["idpersonal"] else ""
+            inside = "  INSIDE" if r["inside"] else ""
+            print(f"  {who}{tag:<40}  IN {r['in']}   OUT {r['out']}{inside}")
+        print(f"  ----\n  Occupancy: {occ['known']} known + {occ['unknown']} unknown = {occ['total']}\n")
+        return 0
+    finally:
+        repo.close()
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-c", "--config", default="config/config.yaml")
     ap.add_argument("--check", action="store_true", help="validate config and exit")
+    ap.add_argument("--summary", nargs="?", const="", metavar="DATE",
+                    help="print the daily summary (YYYY-MM-DD; default today) and exit")
     a = ap.parse_args()
 
     try:
@@ -30,6 +56,10 @@ def main() -> int:
     setup_logging(cfg.logging.level, cfg.logging.dir, cfg.logging.rotate_mb, cfg.logging.backups)
     log = logging.getLogger("main")
     log.info("config ok: %s", cfg._path)
+
+    if a.summary is not None:
+        return _print_summary(cfg, a.summary or None)
+
     log.info("cam_out.source=%s  cam_in.source=%s",
              cfg.cameras.cam_out.source, cfg.cameras.cam_in.source)
 

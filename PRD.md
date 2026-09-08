@@ -4,7 +4,7 @@
 
 **Versi:** 2.0
 **Platform:** NVIDIA Jetson Nano Developer Kit 4GB (B01, 2× port CSI)
-**Kamera:** 2× IMX219-160 (CSI / MIPI)
+**Kamera:** 2× IMX219-120 (CSI / MIPI)
 **Target OS:** JetPack / L4T R32.7.1
 **Python:** 3.6.9 (Jetson) / 3.9+ (pengembangan di laptop)
 **CUDA:** 10.2
@@ -127,10 +127,10 @@ Occupancy tunggal disuplai kedua kamera dengan dedup berdasarkan `(waktu, arah)`
 ## 5.2 Pipeline per Kamera
 
 ```
-CSI CAMERA (IMX219-160)
+CSI CAMERA (IMX219-120)
         │
         ▼
-  Frame Capture  ── (opsional) undistort lensa 160°
+  Frame Capture  ── (opsional) undistort lensa 120°
         │
         ▼
   YOLO Detection (person / head)
@@ -191,12 +191,12 @@ CSI CAMERA (IMX219-160)
 | JetPack | R32.7.1 |
 | CUDA | 10.2 |
 | Python (Jetson) | 3.6.9 |
-| Kamera | 2× IMX219-160 CSI, mode 1280×720 atau 1920×1080 |
+| Kamera | 2× IMX219-120 CSI, mode 1280×720 atau 1920×1080 |
 | Power | Barrel jack 5V/4A (jangan micro-USB), mode 10W/MAXN |
 | Pendinginan | Kipas aktif wajib (beban GPU + 2 kamera berkelanjutan) |
 | Penyimpanan | ≥ 32 GB (OS + model + event + snapshot) |
 
-Jetson adalah **inference device**, bukan mesin training. Kendala fisik: FFC bawaan IMX219-160 ±15 cm — Jetson harus berada dalam ~1 m dari kamera, atau memakai FFC/extender berkualitas (kabel buruk = noise gambar). Pertimbangkan enclosure Jetson tepat di atas pintu.
+Jetson adalah **inference device**, bukan mesin training. Kendala fisik: FFC bawaan IMX219-120 ±15 cm — Jetson harus berada dalam ~1 m dari kamera, atau memakai FFC/extender berkualitas (kabel buruk = noise gambar). Pertimbangkan enclosure Jetson tepat di atas pintu.
 
 ---
 
@@ -299,7 +299,7 @@ query_embedding → cosine similarity ke seluruh gallery → top-k
 
 ## 9.1 Kebijakan Data
 
-- **Perekaman ulang dengan IMX219** pada posisi pintu terpasang. Ini menghilangkan *domain gap* (selfie 40 cm ≠ kamera pintu 2–3 m nunduk fisheye), memberi kontrol kualitas, dan label identitas pasti benar.
+- **Perekaman ulang dengan IMX219** pada posisi pintu terpasang. Ini menghilangkan *domain gap* (selfie 40 cm ≠ kamera pintu 2–3 m nunduk, barrel ringan), memberi kontrol kualitas, dan label identitas pasti benar.
 - Dataset lama `raw/` (dump enrollment aplikasi mobile terdahulu) **di-*shelve***: 1420 folder `idpersonal`, mayoritas hanya 1 foto usable, domain selfie. Tetap disimpan (gitignore) — satu-satunya kegunaan tersisa: **pool impostor** untuk uji FAR. Diaudit oleh `scripts/ingest_raw.py`.
 
 ## 9.2 Protokol Enrollment
@@ -741,7 +741,7 @@ Setiap capaian harus menghasilkan sistem yang dapat dijalankan dan diuji sebelum
 |---|---|---|
 | 0 | Scaffold | `python main.py --check` memuat + memvalidasi `config.yaml`, keluar bersih. `tests/` lulus. |
 | 1 | Camera | `CameraSource` pluggable (`webcam`/`file`/`csi`); dua sumber berjalan bersamaan; FPS terukur & stabil; shutdown bersih; recover saat kamera dicabut. |
-| 1b | Kalibrasi lensa | Per kamera: `camera_matrix` + `dist_coeffs` untuk barrel 160° (khusus CSI). Frame ter-undistort. |
+| 1b | Kalibrasi lensa | Per kamera: `camera_matrix` + `dist_coeffs` untuk barrel 120° (khusus CSI). Frame ter-undistort. |
 | 1c | Site survey | Kamera terpasang fisik. Klip `cam_out` + `cam_in` untuk semua skenario (§7.4). Set garis pita + ROI recognition per kamera. Tinggi wajah di garis ≥ 112 px. |
 | 2 | Detection | YOLO person/head + confidence tampil; filter kelas; FPS terukur; engine di-share antar kamera. |
 | 3 | Tracking | `track_id` stabil; 2 orang sejajar = 2 ID; ID bertahan saat occlusion singkat (tailgating). Ukur ID switch. |

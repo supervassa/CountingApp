@@ -2,7 +2,7 @@
 
 ## AI People Flow + Face Recognition System (v2)
 
-Anda bertindak sebagai **Senior AI/Computer Vision Engineer + Edge AI Engineer**. Bangun sistem penghitung orang masuk/keluar gedung berbasis **YOLO + ByteTrack + Face Recognition** yang berjalan pada **NVIDIA Jetson Nano 4GB (B01)** dengan **2× kamera CSI IMX219-160**.
+Anda bertindak sebagai **Senior AI/Computer Vision Engineer + Edge AI Engineer**. Bangun sistem penghitung orang masuk/keluar gedung berbasis **YOLO + ByteTrack + Face Recognition** yang berjalan pada **NVIDIA Jetson Nano 4GB (B01)** dengan **2× kamera CSI IMX219-120**.
 
 Dokumen ini adalah instruksi kerja. Rujuk [PRD.md](PRD.md) untuk detail requirement.
 
@@ -38,9 +38,9 @@ Contoh output:
 ## 2. Arsitektur Utama
 
 ```
-2× CSI Camera (IMX219-160)
+2× CSI Camera (IMX219-120)
    ↓  (per kamera)
-Frame Capture  → (opsional) undistort lensa 160°
+Frame Capture  → (opsional) undistort lensa 120°
    ↓
 YOLO Person/Head Detection
    ↓
@@ -92,12 +92,12 @@ Architecture : ARM64 / aarch64
 JetPack      : R32.7.1
 CUDA         : 10.2
 Python       : 3.6.9 (Jetson) / 3.9+ (laptop dev)
-Kamera       : 2× IMX219-160 CSI, 1280×720 atau 1920×1080
+Kamera       : 2× IMX219-120 CSI, 1280×720 atau 1920×1080
 Power        : barrel jack 5V/4A, mode 10W/MAXN
 Cooling      : kipas aktif wajib
 ```
 
-Jetson = **inference device**, bukan mesin training. Optimalkan RAM, VRAM, CPU, GPU, latency. Kendala: FFC IMX219-160 ±15 cm → Jetson dalam ~1 m dari kamera.
+Jetson = **inference device**, bukan mesin training. Optimalkan RAM, VRAM, CPU, GPU, latency. Kendala: FFC IMX219-120 ±15 cm → Jetson dalam ~1 m dari kamera.
 
 **Pengembangan dilakukan di laptop dulu** (pipeline benar dulu), baru port ke Jetson + TensorRT. Modul `app/camera/` memakai `CameraSource` pluggable: `webcam` | `file` | `csi`.
 
@@ -292,7 +292,7 @@ Bertahap. Setiap capaian menghasilkan sistem yang bisa dijalankan + diuji.
 |---|---|---|
 | 0 | Scaffold | struktur, config loader + validasi, `main.py --check`, tests |
 | 1 | Camera | `CameraSource` dual-source, FPS stabil, shutdown bersih, recover |
-| 1b | Kalibrasi lensa | matrix + dist_coeffs per kamera (CSI, barrel 160°) |
+| 1b | Kalibrasi lensa | matrix + dist_coeffs per kamera (CSI, barrel 120°) |
 | 1c | Site survey | kamera terpasang, rekam klip semua skenario, set garis + ROI |
 | 2 | Detection | YOLO person/head, engine di-share |
 | 3 | Tracking | ByteTrack, ID stabil, tahan occlusion singkat, ukur ID switch |

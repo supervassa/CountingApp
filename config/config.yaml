@@ -1,6 +1,6 @@
 # People Flow + Face Recognition — runtime config.
 # Nothing operational is hard-coded in source; tune everything here.
-# Two-camera layout on one Jetson Nano 4GB (2x CSI IMX219-160):
+# Two-camera layout on one Jetson Nano 4GB (2x CSI IMX219-120):
 #   cam_out  -> mounted OUTSIDE the door, faces the approach  -> owns IN  events + identity of people entering
 #   cam_in   -> mounted INSIDE  the door, faces the approach  -> owns OUT events + identity of people leaving
 # During laptop development, point either camera at source: webcam | file.
@@ -29,7 +29,7 @@ cameras:
     height: 720
     fps: 30
     flip_method: 0      # nvvidconv flip-method for csi (0..7)
-    # lens undistortion — only meaningful for csi (160 deg barrel). Fill after Capaian 1b.
+    # lens undistortion — only meaningful for csi (120 deg barrel). Fill after Capaian 1b.
     undistort: false
     camera_matrix: null
     dist_coeffs: null

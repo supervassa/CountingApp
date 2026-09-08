@@ -1,7 +1,7 @@
 # People Flow + Face Recognition
 
 Count people IN/OUT of a doorway and attach identity, on an **NVIDIA Jetson Nano 4GB**
-with **2× IMX219-160 CSI** cameras. Counting is the primary feature; recognition is an
+with **2× IMX219-120 CSI** cameras. Counting is the primary feature; recognition is an
 enrichment layer that may fail (→ `UNKNOWN`) without breaking the count.
 
 - Design & requirements: [PRD.md](PRD.md), [instruksi.md](instruksi.md)
@@ -41,7 +41,7 @@ operational is hard-coded.
 |---|-----------|------------|
 | 0 | Scaffold | `main.py --check` loads config, exits clean ✅ |
 | 1 | Camera | dual-source capture (webcam/file/csi), stable FPS, clean shutdown |
-| 1b | Lens calibration | per-camera matrix + dist coeffs for the 160° barrel (CSI only) |
+| 1b | Lens calibration | per-camera matrix + dist coeffs for the 120° barrel (CSI only) |
 | 1c | Site survey | mount cameras, record IN/OUT clips, set band lines + recog ROI per camera |
 | 2 | Detection | YOLO person/head boxes + confidence, FPS measured |
 | 3 | Tracking | stable `track_id`; 2 people parallel = 2 IDs; ID survives brief occlusion |

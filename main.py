@@ -26,6 +26,7 @@ def _print_summary(cfg, date: str | None) -> int:
         rows = repo.daily_summary(date)
         occ = repo.occupancy()
         anomalies = repo.anomalies()
+        alarms = repo.alarms_on(date)
 
         print(f"\n================ DAILY PEOPLE FLOW — {date} ================")
         if not rows:
@@ -43,6 +44,11 @@ def _print_summary(cfg, date: str | None) -> int:
             for a in anomalies:
                 who = a["name"] or a["idpersonal"] or a["key"]
                 print(f"    {who:<28}  since {a['entered_at']}")
+
+        if alarms:
+            print(f"\n  CROSS-CHECK ALARMS ({len(alarms)}):")
+            for al in alarms:
+                print(f"    {al['ts']}  {al['kind']}  {al['detail']}")
         print()
         return 0
     finally:

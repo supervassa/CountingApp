@@ -14,7 +14,7 @@ from datetime import datetime
 import cv2
 
 from .camera.factory import build_camera
-from .counting.factory import build_counter, build_occupancy
+from .counting.factory import build_counter, build_crosscheck, build_occupancy
 from .database.factory import build_enrichment, build_repository
 from .detection.factory import build_detector
 from .tracking.factory import build_tracker
@@ -75,6 +75,9 @@ class Pipeline:
         self.occupancy.load(self.repo.inside_keys())        # survive a restart
         self.enrichment = build_enrichment(cfg.personnel_db, self.repo)
 
+        # cam_out vs cam_in consistency alarms -> WARNING log + alarms table
+        self.crosscheck = build_crosscheck(cfg.counting, self.repo.insert_alarm)
+
     def _install_signals(self):
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, lambda *_: setattr(self, "_stop", True))
@@ -96,6 +99,7 @@ class Pipeline:
                     self.repo.set_inside(key, ev.idpersonal)
                 else:
                     self.repo.clear_inside(key)
+                self.crosscheck.on_event(ev, self.occupancy.current)
             log.info("[%s] EVENT %s #%d %s | %s", name, ev.direction, ev.track_id,
                      "counted" if counted else "deduped", self.occupancy.summary())
 
@@ -140,6 +144,7 @@ class Pipeline:
         try:
             while not self._stop:
                 loop_t = time.time()
+                self.crosscheck.tick(loop_t)
                 for name, cam in self.cams.items():
                     if not cam.is_open():
                         log.error("[%s] camera closed, stopping", name)

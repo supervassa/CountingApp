@@ -41,3 +41,12 @@ CREATE TABLE IF NOT EXISTS persons_cache (
     info_json  TEXT,                               -- get_info_person() row as opaque JSON
     fetched_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS alarms (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        TEXT NOT NULL,
+    date      TEXT NOT NULL,
+    kind      TEXT NOT NULL,                        -- negative_occupancy | occupancy_too_high | camera_silent
+    detail    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_alarms_date ON alarms(date);

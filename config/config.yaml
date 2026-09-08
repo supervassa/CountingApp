@@ -56,6 +56,10 @@ counting:
   cooldown_s: 2.0              # per track_id, after an event, before the same track may emit again
   confirm_frames: 3            # a solid zone must hold this many frames before it counts
   dedup_window_s: 2.0          # drop a 2nd event, same direction + identity, within this window (cross-camera safety net)
+  crosscheck:                  # PRD §17 — cam_out vs cam_in consistency alarms
+    max_plausible: 200         # occupancy above this = exits are being missed
+    silent_alarm_s: 900        # one camera silent this long while the other is active = shifted/blocked/dead
+    realarm_s: 300             # min seconds between repeats of the same alarm kind
   # line coords are fractions of frame (x1,y1,x2,y2); set per camera in Capaian 1c
   band:
     cam_out:

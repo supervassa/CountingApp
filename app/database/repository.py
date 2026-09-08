@@ -140,3 +140,18 @@ class Repository:
         r = self.conn.execute(
             "SELECT name FROM persons_cache WHERE idpersonal = ?", (idpersonal,)).fetchone()
         return r["name"] if r else None
+
+    # --- alarms (written by CrossCheck) ---
+    def insert_alarm(self, kind: str, detail: str = "") -> int:
+        when = datetime.now().astimezone()
+        cur = self.conn.execute(
+            "INSERT INTO alarms (ts, date, kind, detail) VALUES (?,?,?,?)",
+            (when.replace(microsecond=0).isoformat(), when.strftime("%Y-%m-%d"), kind, detail))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def alarms_on(self, date: str | None = None) -> list[dict]:
+        date = date or datetime.now().strftime("%Y-%m-%d")
+        rows = self.conn.execute(
+            "SELECT ts, kind, detail FROM alarms WHERE date = ? ORDER BY ts", (date,)).fetchall()
+        return [{"ts": r["ts"], "kind": r["kind"], "detail": r["detail"]} for r in rows]

@@ -54,8 +54,8 @@ operational is hard-coded.
 | 6 | Database | SQLite events (system time, `camera_id`, `idpersonal`) + occupancy_state (survives restart); async PostgreSQL enrichment worker → persons_cache (off by default) ✅ |
 | 7 | Daily summary | `main.py --summary [DATE]` — per-person IN/OUT/status, occupancy known/unknown, end-of-day anomaly list (still marked inside) ✅ |
 | 4 | Face recognition | enrolled → idpersonal, others → `UNKNOWN`; threshold calibrated on door-cam probe (after cameras mounted) |
-| 8 | Optimization | ONNX → TensorRT FP16, shared engines, 2-cam within Nano budget |
-| 9 | Cross-check | occupancy from `cam_out` vs `cam_in` agree; alarm on drift |
+| 9 | Cross-check | `cam_out` vs `cam_in` consistency alarms (negative / too-high occupancy, silent camera) → WARNING log + `alarms` table, rate-limited ✅ |
+| 8 | Optimization | ONNX → TensorRT FP16, shared engines, 2-cam within Nano budget (on Jetson) |
 
 ## Enrollment
 

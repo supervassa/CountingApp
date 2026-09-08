@@ -75,6 +75,17 @@ class Repository:
             "SELECT key, entered_at FROM occupancy_state").fetchall()
         return [(r["key"], r["entered_at"]) for r in rows]
 
+    def anomalies(self) -> list[dict]:
+        """Everyone still marked inside — an exit that was never seen, or someone
+        who stayed. Names filled from persons_cache when known."""
+        rows = self.conn.execute(
+            """SELECT o.key, o.idpersonal, o.entered_at, pc.name
+               FROM occupancy_state o
+               LEFT JOIN persons_cache pc ON pc.idpersonal = o.idpersonal
+               ORDER BY o.entered_at""").fetchall()
+        return [{"key": r["key"], "idpersonal": r["idpersonal"],
+                 "name": r["name"], "entered_at": r["entered_at"]} for r in rows]
+
     def occupancy(self) -> dict:
         rows = self.conn.execute("SELECT key, idpersonal FROM occupancy_state").fetchall()
         known = sum(1 for r in rows if r["idpersonal"])

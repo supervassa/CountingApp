@@ -25,15 +25,25 @@ def _print_summary(cfg, date: str | None) -> int:
         date = date or datetime.now().strftime("%Y-%m-%d")
         rows = repo.daily_summary(date)
         occ = repo.occupancy()
-        print(f"\n==== DAILY PEOPLE FLOW — {date} ====")
+        anomalies = repo.anomalies()
+
+        print(f"\n================ DAILY PEOPLE FLOW — {date} ================")
         if not rows:
             print("  (no events)")
         for r in rows:
-            who = r["name"] or r["identity"]
-            tag = f" ({r['idpersonal']})" if r["idpersonal"] else ""
-            inside = "  INSIDE" if r["inside"] else ""
-            print(f"  {who}{tag:<40}  IN {r['in']}   OUT {r['out']}{inside}")
-        print(f"  ----\n  Occupancy: {occ['known']} known + {occ['unknown']} unknown = {occ['total']}\n")
+            who = r["name"] or (r["idpersonal"][:8] if r["idpersonal"] else r["identity"])
+            status = "-" if not r["idpersonal"] else ("INSIDE" if r["inside"] else "OUTSIDE")
+            print(f"  {who:<24}  IN {r['in']:>3}   OUT {r['out']:>3}   {status}")
+        print("  " + "-" * 52)
+        print(f"  Current occupancy : {occ['known']} known + {occ['unknown']} unknown = {occ['total']}")
+
+        if anomalies:
+            print(f"\n  ANOMALY — still marked inside ({len(anomalies)}): "
+                  "exit not seen, or stayed past close")
+            for a in anomalies:
+                who = a["name"] or a["idpersonal"] or a["key"]
+                print(f"    {who:<28}  since {a['entered_at']}")
+        print()
         return 0
     finally:
         repo.close()

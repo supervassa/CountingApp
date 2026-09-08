@@ -41,6 +41,24 @@ def test_events_persist_and_summarise():
     r.close()
 
 
+def test_anomalies_lists_still_inside():
+    r = _repo()
+    pid = str(uuid.uuid4())
+    r.insert_event(CrossEvent("cam_out", "IN", 1, ts=0.0, identity=pid, idpersonal=pid))
+    r.set_inside(pid, pid, entered_at_iso="2026-09-08T07:30:00+07:00")
+    r.insert_event(CrossEvent("cam_out", "IN", 2, ts=1.0))
+    r.set_inside("cam_out:2", None, entered_at_iso="2026-09-08T08:00:00+07:00")
+    r.insert_event(CrossEvent("cam_out", "IN", 3, ts=2.0))
+    r.set_inside("cam_out:3", None)
+    r.insert_event(CrossEvent("cam_in", "OUT", 3, ts=3.0))
+    r.clear_inside("cam_out:3")                                    # #3 left cleanly
+
+    an = r.anomalies()
+    assert {a["key"] for a in an} == {pid, "cam_out:2"}, an
+    assert an[0]["key"] == pid                                     # ordered by entered_at
+    r.close()
+
+
 def test_timestamp_is_system_time_not_event_ts():
     r = _repo()
     r.insert_event(CrossEvent("cam_out", "IN", 1, ts=0.0))         # ts=epoch 0 (1970)

@@ -13,6 +13,7 @@ import time
 import cv2
 
 from .camera.factory import build_camera
+from .counting.factory import build_counter, build_occupancy
 from .detection.factory import build_detector
 from .tracking.factory import build_tracker
 
@@ -59,22 +60,33 @@ class Pipeline:
         except (FileNotFoundError, ImportError) as e:
             log.warning("detection disabled: %s", e)
 
-        # one tracker per camera
+        # one tracker + one crossing counter per camera; one shared occupancy tally
         self.trackers = {name: build_tracker(cfg.tracking) for name in self.cams}
+        self.counters = {
+            name: build_counter(cfg.counting, name, getattr(cfg.cameras, name).role)
+            for name in self.cams
+        }
+        self.occupancy = build_occupancy(cfg.counting)
 
     def _install_signals(self):
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, lambda *_: setattr(self, "_stop", True))
 
     def process_frame(self, name, frame):
-        """Detect, then track. Recognition/counting hook in here later."""
+        """Detect -> track -> band crossing -> occupancy. Recognition hooks in later."""
         img = frame.image
         if self.detector is None:
             return img
         dets = self.detector.detect(img)
         tracks = self.trackers[name].update(dets, img.shape)
 
+        for ev in self.counters[name].update(tracks, img.shape, frame.ts):
+            counted = self.occupancy.apply(ev)
+            log.info("[%s] EVENT %s #%d %s | %s", name, ev.direction, ev.track_id,
+                     "counted" if counted else "deduped", self.occupancy.summary())
+
         out = img.copy()
+        self._draw_band(out, name)
         for t in tracks:
             x1, y1, x2, y2 = t.xyxy
             col = _color(t.track_id)
@@ -87,11 +99,20 @@ class Pipeline:
             pts = list(t.trajectory)
             for a, b in zip(pts, pts[1:]):
                 cv2.line(out, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), col, 2)
+        cv2.putText(out, self.occupancy.summary(), (12, out.shape[0] - 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         if frame.index % 30 == 0:
-            log.info("[%s] frame %d: %d det -> %d track(s) %s",
+            log.info("[%s] frame %d: %d det -> %d track(s) %s | %s",
                      name, frame.index, len(dets), len(tracks),
-                     sorted(t.track_id for t in tracks))
+                     sorted(t.track_id for t in tracks), self.occupancy.summary())
         return out
+
+    def _draw_band(self, img, name):
+        h, w = img.shape[:2]
+        band = self.counters[name].band
+        for frac, col in ((band.outer_frac, (0, 165, 255)), (band.inner_frac, (0, 255, 0))):
+            p1, p2 = band.line_px(frac, w, h)
+            cv2.line(img, p1, p2, col, 2)
 
     def run(self):
         self._install_signals()

@@ -54,7 +54,8 @@ counting:
   crossing_anchor: head        # head | body_centroid
   min_track_len: 5             # frames a track must exist before it may generate an event
   cooldown_s: 2.0              # per track_id, after an event, before the same track may emit again
-  confirm_frames: 3            # crossing must hold this many frames to count
+  confirm_frames: 3            # a solid zone must hold this many frames before it counts
+  dedup_window_s: 2.0          # drop a 2nd event, same direction + identity, within this window (cross-camera safety net)
   # line coords are fractions of frame (x1,y1,x2,y2); set per camera in Capaian 1c
   band:
     cam_out:

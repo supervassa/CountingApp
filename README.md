@@ -28,9 +28,14 @@ both check-in and check-out.
 ```bash
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/pip install ultralytics                       # export-only (pulls torch)
+./.venv/bin/python scripts/export_yolo.py --imgsz 480     # -> models/yolov8n.onnx
 ./.venv/bin/python main.py --check      # load + validate config/config.yaml
-./.venv/bin/python main.py              # run capture loop (needs a webcam)
+./.venv/bin/python main.py              # capture + detection (needs a webcam)
 ```
+
+`models/` is gitignored — regenerate `yolov8n.onnx` with `scripts/export_yolo.py`.
+Without it the capture loop still runs (detection logs "disabled").
 
 `config/config.yaml` holds everything tunable — cameras, lines, thresholds. Nothing
 operational is hard-coded.
@@ -43,14 +48,36 @@ operational is hard-coded.
 | 1 | Camera | dual-source capture (webcam/file/csi), stable FPS, clean shutdown |
 | 1b | Lens calibration | per-camera matrix + dist coeffs for the 120° barrel (CSI only) |
 | 1c | Site survey | mount cameras, record IN/OUT clips, set band lines + recog ROI per camera |
-| 2 | Detection | YOLO person/head boxes + confidence, FPS measured |
-| 3 | Tracking | stable `track_id`; 2 people parallel = 2 IDs; ID survives brief occlusion |
-| 4 | Face recognition | enrolled → idpersonal, others → `UNKNOWN`; threshold calibrated on door-cam probe |
-| 5 | Counting | 2-line band + direction filter; one crossing = one event; per-track cooldown |
-| 6 | Database | events persisted with timestamp + `camera_id` + `idpersonal`; personnel enrichment worker |
-| 7 | Daily summary | per-person IN/OUT/status; occupancy |
-| 8 | Optimization | ONNX → TensorRT FP16, shared engines, 2-cam within Nano budget |
-| 9 | Cross-check | occupancy from `cam_out` vs `cam_in` agree; alarm on drift |
+| 2 | Detection | YOLOv8n via onnxruntime, shared across cameras; person boxes + confidence ✅ |
+| 3 | Tracking | ByteTrack per camera; stable `track_id` through crossing + short occlusion; `track_buffer` recovers gaps ✅ |
+| 5 | Counting | 2-line band + per-track state machine + direction filter (cam_out=IN, cam_in=OUT) + per-track cooldown + occupancy; one crossing = one event ✅ |
+| 6 | Database | SQLite events (system time, `camera_id`, `idpersonal`) + occupancy_state (survives restart); async PostgreSQL enrichment worker → persons_cache (off by default) ✅ |
+| 7 | Daily summary | `main.py --summary [DATE]` — per-person IN/OUT/status, occupancy known/unknown, end-of-day anomaly list (still marked inside) ✅ |
+| 4 | Face recognition | enrolled → idpersonal, others → `UNKNOWN`; threshold calibrated on door-cam probe (after cameras mounted) |
+| 9 | Cross-check | `cam_out` vs `cam_in` consistency alarms (negative / too-high occupancy, silent camera) → WARNING log + `alarms` table, rate-limited ✅ |
+| 8 | Optimization | ONNX → TensorRT FP16, shared engines, 2-cam within Nano budget (on Jetson) |
+
+## Status
+
+Capaian 0, 1, 2, 3, 5, 6, 7, 9 are built and tested (35 tests, green on Python 3.9 and 3.8).
+The code targets the Jetson's Python 3.6 (no `from __future__ import annotations`, no `list[...]` / `X | None`
+hints, no SQLite upsert syntax) but has **not yet run on a real Jetson** — start with
+[docs/JETSON.md](docs/JETSON.md) and `scripts/jetson_check.py`.
+The remaining ones need physical hardware:
+
+- **1b lens calibration** — once the cameras are mounted: capture a checkerboard,
+  fill `cameras.<cam>.camera_matrix` / `dist_coeffs`, set `undistort: true`.
+- **1c site survey** — mount both cameras, record IN/OUT and crowd clips, then set
+  `counting.band.<cam>` lines and `recognition.roi` per camera from those clips.
+- **4 face recognition** — not built yet. Needs face detect + align (112px), an
+  ArcFace ONNX embedder, a gallery (`data/gallery/embeddings.npz`), a cosine
+  matcher (threshold + margin), and vote-and-lock of identity onto a `track_id`.
+  Enrollment (`app/enrollment/`) captures 15–20 shots per person from the mounted
+  IMX219, keyed to their `idpersonal`; the threshold is calibrated on a door-cam
+  probe (FAR/FRR/EER). Turn on `personnel_db` with credentials + the column list
+  from `person.get_info_person()` for names.
+- **8 optimization** — on the Jetson: ONNX → TensorRT FP16, shared engines, verify
+  the 2-camera pipeline fits the Nano budget.
 
 ## Enrollment
 
@@ -62,14 +89,23 @@ per person, selfie domain) — kept only as a potential impostor pool for FAR te
 ## Repo layout
 
 ```
-main.py                 entry point
-config/config.yaml      all runtime tuning
+main.py                 entry point (run | --check | --summary)
+config/config.yaml      all runtime tuning (cameras, band lines, thresholds, personnel_db)
+config/jetson.yaml      overlay for the Jetson: python main.py -c config/config.yaml -c config/jetson.yaml
+requirements-jetson.txt Python 3.6 / aarch64 pins;  docs/JETSON.md = bring-up guide
 app/
   config.py             load + validate yaml
   logging_setup.py
-  pipeline.py           capture orchestrator (detect/track/recog/count hang off here)
-  camera/               base.py + webcam / filesource / csi + factory
-  detection/ tracking/ recognition/ counting/ database/ enrollment/   (stubs)
-scripts/ingest_raw.py   legacy dataset audit
-tests/test_config.py
+  pipeline.py           orchestrator: capture -> detect -> track -> crossing -> occupancy -> db
+  camera/               CameraSource: webcam / filesource / csi (GStreamer) + factory
+  detection/            Detector + YoloOnnxDetector + factory
+  tracking/             Tracker + ByteTracker + Kalman + factory
+  counting/             band, counter (state machine), occupancy, crosscheck + factory
+  database/             schema.sql, repository, enrichment worker + factory
+  recognition/ enrollment/   (Capaian 4 — not built yet)
+scripts/
+  ingest_raw.py         legacy dataset audit
+  export_yolo.py        yolov8n.pt -> ONNX (one-time)
+  jetson_check.py       Jetson readiness: platform, libs, CSI cameras, YOLO speed (py3.6-safe)
+tests/                  config, bytetrack, nms, counting, crosscheck, database  (35 tests)
 ```

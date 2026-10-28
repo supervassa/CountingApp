@@ -1,0 +1,25 @@
+# Overlay for the Jetson Nano — only what differs from config/config.yaml.
+#   python main.py -c config/config.yaml -c config/jetson.yaml
+#
+# Both cameras are IMX219 on the two CSI ports (B01 board). If 1280x720@30 will not
+# open, run `python scripts/jetson_check.py` — it tries the sensor modes the IMX219
+# supports and tells you which one works.
+
+app:
+  display: false        # headless over SSH; true only with a monitor attached
+  target_fps: 30        # loop pacing cap — real speed is limited by inference, not this
+
+cameras:
+  cam_out:
+    source: csi
+    csi_sensor_id: 0
+  cam_in:
+    source: csi
+    csi_sensor_id: 1
+
+# Retune AFTER measuring the real per-camera FPS on the Nano. At ~3 FPS a walking
+# person spends only a few frames in the band, so confirm_frames/min_track_len of
+# 3/5 can swallow real crossings — try 2/3 first if counts come up short.
+counting:
+  confirm_frames: 3
+  min_track_len: 5

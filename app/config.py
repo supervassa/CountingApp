@@ -3,10 +3,10 @@
 Access is attribute-style: cfg.cameras.cam_out.source
 Fail loud and early on a missing/wrong key — better than a KeyError deep in the loop.
 """
-from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Union
 
 import yaml
 
@@ -37,11 +37,30 @@ def _get(ns, dotted: str):
     return cur
 
 
-def load_config(path: str | Path = "config/config.yaml") -> SimpleNamespace:
-    path = Path(path)
+def _read_yaml(path: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"config not found: {path}")
-    raw = yaml.safe_load(path.read_text()) or {}
+    return yaml.safe_load(path.read_text()) or {}
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    """Overlay `over` onto `base`: dicts merge key by key, anything else is replaced."""
+    out = dict(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def load_config(path: Union[str, Path] = "config/config.yaml", *overrides: Union[str, Path]) -> SimpleNamespace:
+    """Load the base config, then overlay each override file in order
+    (e.g. config.yaml + jetson.yaml — the overlay only lists what differs)."""
+    path = Path(path)
+    raw = _read_yaml(path)
+    for ov in overrides:
+        raw = _deep_merge(raw, _read_yaml(Path(ov)))
     cfg = _to_ns(raw)
 
     for key in _REQUIRED:
@@ -54,5 +73,5 @@ def load_config(path: str | Path = "config/config.yaml") -> SimpleNamespace:
         if cam.source == "file" and not getattr(cam, "file_path", None):
             raise ValueError(f"cameras.{cam_name}.source=file but file_path is empty")
 
-    cfg._path = str(path)
+    cfg._path = " + ".join(str(p) for p in (path,) + tuple(overrides))
     return cfg

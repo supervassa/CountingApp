@@ -1,5 +1,4 @@
 """One place to configure logging: console + rotating file."""
-from __future__ import annotations
 
 import logging
 from logging.handlers import RotatingFileHandler

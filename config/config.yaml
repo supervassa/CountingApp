@@ -54,15 +54,26 @@ counting:
   crossing_anchor: head        # head | body_centroid
   min_track_len: 5             # frames a track must exist before it may generate an event
   cooldown_s: 2.0              # per track_id, after an event, before the same track may emit again
-  confirm_frames: 3            # crossing must hold this many frames to count
+  confirm_frames: 3            # a solid zone must hold this many frames before it counts
+  dedup_window_s: 2.0          # drop a 2nd event, same direction + identity, within this window (cross-camera safety net)
+  crosscheck:                  # PRD §17 — cam_out vs cam_in consistency alarms
+    max_plausible: 200         # occupancy above this = exits are being missed
+    silent_alarm_s: 900        # one camera silent this long while the other is active = shifted/blocked/dead
+    realarm_s: 300             # min seconds between repeats of the same alarm kind
   # line coords are fractions of frame (x1,y1,x2,y2); set per camera in Capaian 1c
+  # Direction = progress from the outer line to the inner line. Each camera faces the
+  # approach to the door, so a person heading for the door walks DOWN the frame:
+  #   cam_out: entering = moving down  -> outer above inner  (outside -> inside = IN)
+  #   cam_in : leaving  = moving down  -> outer BELOW inner  (inside -> outside = OUT)
+  # So cam_in's lines are the mirror of cam_out's. If one direction never counts on
+  # the real cameras, the band for that camera is probably the wrong way round.
   band:
     cam_out:
       outer: [0.0, 0.35, 1.0, 0.35]
       inner: [0.0, 0.62, 1.0, 0.62]
     cam_in:
-      outer: [0.0, 0.35, 1.0, 0.35]
-      inner: [0.0, 0.62, 1.0, 0.62]
+      outer: [0.0, 0.62, 1.0, 0.62]
+      inner: [0.0, 0.35, 1.0, 0.35]
 
 detection:
   model: models/yolov8n.onnx   # person/head detector; swap to a CrowdHuman head model if crowds

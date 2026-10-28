@@ -1,7 +1,7 @@
 """Webcam / integer-index capture (laptop development)."""
-from __future__ import annotations
 
 import logging
+from typing import Optional
 
 import cv2
 
@@ -14,7 +14,7 @@ class WebcamSource(CameraSource):
     def __init__(self, cam_id: str, index: int = 0, width: int = 1280, height: int = 720):
         super().__init__(cam_id)
         self.index, self.width, self.height = index, width, height
-        self._cap: cv2.VideoCapture | None = None
+        self._cap: Optional[cv2.VideoCapture] = None
 
     def open(self) -> None:
         self._cap = cv2.VideoCapture(self.index)
@@ -28,7 +28,7 @@ class WebcamSource(CameraSource):
                  int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
                  int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
 
-    def read(self) -> Frame | None:
+    def read(self) -> Optional[Frame]:
         if not self._cap:
             return None
         ok, img = self._cap.read()

@@ -1,5 +1,4 @@
 """Config loader sanity — runnable with `python -m pytest` or plain `python tests/test_config.py`."""
-from __future__ import annotations
 
 import sys
 import textwrap
@@ -51,6 +50,22 @@ def test_rejects_file_without_path(tmp_path):
     raise AssertionError("expected ValueError for file source without file_path")
 
 
+def test_overlay_wins_and_keeps_the_rest(tmp_path):
+    base = _write(tmp_path, MINIMAL)
+    ov = tmp_path / "ov.yaml"
+    ov.write_text(textwrap.dedent("""
+        app: {display: true}
+        cameras:
+          cam_in: {source: csi, csi_sensor_id: 1}
+    """))
+    cfg = load_config(base, ov)
+    assert cfg.app.display is True and cfg.app.target_fps == 8       # overridden / kept
+    assert cfg.cameras.cam_in.source == "csi"                        # overridden
+    assert cfg.cameras.cam_in.width == 1280                          # sibling key survives the merge
+    assert cfg.cameras.cam_out.source == "webcam"                    # untouched camera
+    assert cfg._path.endswith("ov.yaml")
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -58,4 +73,5 @@ if __name__ == "__main__":
     test_loads_minimal(d)
     test_rejects_bad_source(d)
     test_rejects_file_without_path(d)
+    test_overlay_wins_and_keeps_the_rest(Path(tempfile.mkdtemp()))
     print("ok")

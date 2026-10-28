@@ -1,25 +1,39 @@
-"""Capaian 1 orchestrator: open both cameras, pull frames, measure FPS.
+"""Pipeline orchestrator: open both cameras, pull frames, detect, track.
 
-Detection / tracking / recognition / counting hang off process_frame() in later
-capaian. For now it just proves the dual-camera capture loop is stable.
+Recognition / counting hang off process_frame() in later capaian.
+The Detector is shared across both cameras (§5.3 PRD); each camera keeps its
+own Tracker (state is per-camera).
 """
-from __future__ import annotations
 
 import logging
 import signal
 import time
+from datetime import datetime
+from typing import List
 
 import cv2
 
 from .camera.factory import build_camera
+from .counting.factory import build_counter, build_crosscheck, build_occupancy
+from .database.factory import build_enrichment, build_repository
+from .detection.factory import build_detector
+from .tracking.factory import build_tracker
 
 log = logging.getLogger(__name__)
+
+# deterministic-ish colour per track id
+_PALETTE = [(66, 133, 244), (219, 68, 55), (244, 180, 0), (15, 157, 88),
+            (171, 71, 188), (0, 172, 193), (255, 112, 67), (158, 157, 36)]
+
+
+def _color(tid: int):
+    return _PALETTE[tid % len(_PALETTE)]
 
 
 class FpsMeter:
     def __init__(self, window: int = 30):
         self.window = window
-        self._t: list[float] = []
+        self._t: List[float] = []
 
     def tick(self) -> float:
         now = time.time()
@@ -41,16 +55,86 @@ class Pipeline:
         self.meters = {name: FpsMeter() for name in self.cams}
         self._stop = False
 
+        # shared detector; keep running the capture loop even if the model is absent
+        self.detector = None
+        try:
+            self.detector = build_detector(cfg.detection)
+        except (FileNotFoundError, ImportError) as e:
+            log.warning("detection disabled: %s", e)
+
+        # one tracker + one crossing counter per camera; one shared occupancy tally
+        self.trackers = {name: build_tracker(cfg.tracking) for name in self.cams}
+        self.counters = {
+            name: build_counter(cfg.counting, name, getattr(cfg.cameras, name).role)
+            for name in self.cams
+        }
+        self.occupancy = build_occupancy(cfg.counting)
+
+        # local SQLite + async personnel-name enrichment (PostgreSQL, off by default)
+        self.repo = build_repository(cfg.database)
+        self.occupancy.load(self.repo.inside_keys())        # survive a restart
+        self.enrichment = build_enrichment(cfg.personnel_db, self.repo)
+
+        # cam_out vs cam_in consistency alarms -> WARNING log + alarms table
+        self.crosscheck = build_crosscheck(cfg.counting, self.repo.insert_alarm)
+
     def _install_signals(self):
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, lambda *_: setattr(self, "_stop", True))
 
     def process_frame(self, name, frame):
-        """Hook for later capaian (detect/track/recognize/count). No-op for now."""
-        return frame.image
+        """Detect -> track -> band crossing -> occupancy. Recognition hooks in later."""
+        img = frame.image
+        if self.detector is None:
+            return img
+        dets = self.detector.detect(img)
+        tracks = self.trackers[name].update(dets, img.shape)
+
+        for ev in self.counters[name].update(tracks, img.shape, frame.ts):
+            counted = self.occupancy.apply(ev)
+            if counted:
+                key = self.occupancy.key(ev)
+                self.repo.insert_event(ev, ts=datetime.fromtimestamp(ev.ts))
+                if ev.direction == "IN":
+                    self.repo.set_inside(key, ev.idpersonal)
+                else:
+                    self.repo.clear_inside(key)
+                self.crosscheck.on_event(ev, self.occupancy.current)
+            log.info("[%s] EVENT %s #%d %s | %s", name, ev.direction, ev.track_id,
+                     "counted" if counted else "deduped", self.occupancy.summary())
+
+        out = img.copy()
+        self._draw_band(out, name)
+        for t in tracks:
+            x1, y1, x2, y2 = t.xyxy
+            col = _color(t.track_id)
+            cv2.rectangle(out, (x1, y1), (x2, y2), col, 2)
+            tag = f"#{t.track_id} {t.score:.2f}"
+            if t.time_since_update:
+                tag += f" (lost {t.time_since_update})"
+            cv2.putText(out, tag, (x1, max(12, y1 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
+            pts = list(t.trajectory)
+            for a, b in zip(pts, pts[1:]):
+                cv2.line(out, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), col, 2)
+        cv2.putText(out, self.occupancy.summary(), (12, out.shape[0] - 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        if frame.index % 30 == 0:
+            log.info("[%s] frame %d: %d det -> %d track(s) %s | %s",
+                     name, frame.index, len(dets), len(tracks),
+                     sorted(t.track_id for t in tracks), self.occupancy.summary())
+        return out
+
+    def _draw_band(self, img, name):
+        h, w = img.shape[:2]
+        band = self.counters[name].band
+        for frac, col in ((band.outer_frac, (0, 165, 255)), (band.inner_frac, (0, 255, 0))):
+            p1, p2 = band.line_px(frac, w, h)
+            cv2.line(img, p1, p2, col, 2)
 
     def run(self):
         self._install_signals()
+        self.enrichment.start()
         for cam in self.cams.values():
             cam.open()
         display = bool(getattr(self.cfg.app, "display", False))
@@ -60,6 +144,7 @@ class Pipeline:
         try:
             while not self._stop:
                 loop_t = time.time()
+                self.crosscheck.tick(loop_t)
                 for name, cam in self.cams.items():
                     if not cam.is_open():
                         log.error("[%s] camera closed, stopping", name)
@@ -86,4 +171,6 @@ class Pipeline:
                 cam.release()
             if display:
                 cv2.destroyAllWindows()
-            log.info("pipeline stopped")
+            self.enrichment.stop()
+            self.repo.close()
+            log.info("pipeline stopped | %s", self.occupancy.summary())

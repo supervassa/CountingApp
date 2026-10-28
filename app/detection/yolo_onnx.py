@@ -7,10 +7,10 @@ Detector interface (Fase Optimasi). One instance is shared across both cameras
 Expected ONNX: single output [1, 4+nc, N] (YOLOv8 export default), bbox in
 xywh, input-pixel space, no separate objectness. Person = COCO class 0.
 """
-from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -23,9 +23,35 @@ log = logging.getLogger(__name__)
 _COCO = {0: "person"}
 
 
+def nms_xyxy(boxes: np.ndarray, scores: np.ndarray, iou_thr: float) -> List[int]:
+    """Greedy class-agnostic NMS. boxes Nx4 (x1,y1,x2,y2) -> kept indices, best first.
+
+    Plain numpy on purpose: cv2.dnn.NMSBoxes changed its accepted box types between
+    OpenCV releases and JetPack 4.x ships an old one.
+    """
+    if len(boxes) == 0:
+        return []
+    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    order = scores.argsort()[::-1]
+    keep: List[int] = []
+    while order.size:
+        i = order[0]
+        keep.append(int(i))
+        rest = order[1:]
+        if rest.size == 0:
+            break
+        w = np.maximum(0.0, np.minimum(x2[i], x2[rest]) - np.maximum(x1[i], x1[rest]))
+        h = np.maximum(0.0, np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest]))
+        inter = w * h
+        iou = inter / (areas[i] + areas[rest] - inter + 1e-9)
+        order = rest[iou <= iou_thr]
+    return keep
+
+
 class YoloOnnxDetector(Detector):
     def __init__(self, model_path: str, input_size: int = 480, conf_threshold: float = 0.35,
-                 nms_iou: float = 0.7, classes: list[str] | None = None):
+                 nms_iou: float = 0.7, classes: Optional[List[str]] = None):
         try:
             import onnxruntime as ort
         except ImportError:  # pragma: no cover
@@ -59,7 +85,7 @@ class YoloOnnxDetector(Detector):
         canvas[top:top + nh, left:left + nw] = resized
         return canvas, r, left, top
 
-    def detect(self, image: np.ndarray) -> list[Detection]:
+    def detect(self, image: np.ndarray) -> List[Detection]:
         canvas, r, pad_x, pad_y = self._letterbox(image)
         blob = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         blob = np.transpose(blob, (2, 0, 1))[None]  # 1,3,S,S
@@ -87,14 +113,10 @@ class YoloOnnxDetector(Detector):
         x2 = (cx + bw / 2 - pad_x) / r
         y2 = (cy + bh / 2 - pad_y) / r
 
-        boxes = np.stack([x1, y1, x2 - x1, y2 - y1], 1)  # NMS wants xywh
-        idx = cv2.dnn.NMSBoxes(boxes.tolist(), cls_score.tolist(), self.conf, self.iou)
-        if len(idx) == 0:
-            return []
-        idx = np.array(idx).flatten()
+        idx = nms_xyxy(np.stack([x1, y1, x2, y2], 1), cls_score, self.iou)
 
         H, W = image.shape[:2]
-        dets: list[Detection] = []
+        dets: List[Detection] = []
         for i in idx:
             dets.append(Detection(
                 x1=float(np.clip(x1[i], 0, W - 1)), y1=float(np.clip(y1[i], 0, H - 1)),

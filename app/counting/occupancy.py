@@ -9,9 +9,9 @@ already suppress jitter from a single track).
 
 inside_set is keyed by idpersonal when known, else "<camera>:<track_id>".
 """
-from __future__ import annotations
 
 import logging
+from typing import Dict, List, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -21,8 +21,8 @@ class Occupancy:
         self.dedup_window_s = float(dedup_window_s)
         self.total_in = 0
         self.total_out = 0
-        self.inside: dict[str, float] = {}      # key -> entry ts
-        self._recent: list[tuple[str, str, float]] = []  # (direction, idpersonal, ts)
+        self.inside: Dict[str, float] = {}      # key -> entry ts
+        self._recent: List[Tuple[str, str, float]] = []  # (direction, idpersonal, ts)
 
     def key(self, ev) -> str:
         return ev.idpersonal or f"{ev.camera_id}:{ev.track_id}"

@@ -3,11 +3,11 @@
 Paces itself to the file's FPS so downstream timing behaves like a live camera.
 Loops by default (handy for dev); set loop=False for one-shot probe runs.
 """
-from __future__ import annotations
 
 import logging
 import time
 from pathlib import Path
+from typing import Optional
 
 import cv2
 
@@ -21,7 +21,7 @@ class FileSource(CameraSource):
         super().__init__(cam_id)
         self.path = Path(path)
         self.loop = loop
-        self._cap: cv2.VideoCapture | None = None
+        self._cap: Optional[cv2.VideoCapture] = None
         self._spf = 1 / 30
         self._next_t = 0.0
 
@@ -36,7 +36,7 @@ class FileSource(CameraSource):
         self._next_t = time.time()
         log.info("[%s] file %s opened (%.1f fps)", self.cam_id, self.path.name, fps)
 
-    def read(self) -> Frame | None:
+    def read(self) -> Optional[Frame]:
         if not self._cap:
             return None
         now = time.time()

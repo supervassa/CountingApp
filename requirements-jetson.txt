@@ -1,0 +1,16 @@
+# Jetson Nano 4GB — JetPack 4.6.x (L4T R32.7.x), Python 3.6.9, aarch64.
+# Install inside a venv that can see the system packages, so JetPack's cv2 (built with
+# GStreamer, needed for the CSI cameras) is available:
+#     python3 -m venv --system-site-packages .venv
+#     . .venv/bin/activate
+#     pip install --upgrade pip==21.3.1 setuptools wheel      # last pip that supports 3.6
+#     pip install -r requirements-jetson.txt
+#
+# Do NOT add opencv-python here: the pip wheel has no GStreamer and cannot open CSI.
+# Pins = the last releases that publish Python 3.6 aarch64 wheels. Verify on the device
+# with `python3 scripts/jetson_check.py`; full steps in docs/JETSON.md.
+dataclasses
+numpy==1.19.5
+scipy==1.5.4
+PyYAML
+onnxruntime==1.10.0      # CPU build from PyPI. For GPU, install the Jetson Zoo wheel instead (docs/JETSON.md)

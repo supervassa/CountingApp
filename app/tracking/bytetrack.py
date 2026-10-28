@@ -8,8 +8,8 @@ lost track survives before it is dropped — the knob that helps tailgating.
 Adapted from the reference ByteTrack (Zhang et al., 2022), trimmed to what this
 project needs and wired to app.tracking.base.Track.
 """
-from __future__ import annotations
 
+from typing import List, Tuple
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
@@ -75,7 +75,7 @@ class _STrack:
         self.age = 0
         self.hits = 0
         self.time_since_update = 0
-        self._traj: list[tuple[float, float]] = []
+        self._traj: List[Tuple[float, float]] = []
 
     def activate(self, tid):
         self.track_id = tid
@@ -114,15 +114,15 @@ class ByteTracker(Tracker):
         self.match_thresh = float(match_thresh)   # IoU distance threshold (1 - IoU)
         self.high = float(high_thresh)
         self.low = float(low_thresh)
-        self._tracked: list[_STrack] = []
-        self._lost: list[_STrack] = []
+        self._tracked: List[_STrack] = []
+        self._lost: List[_STrack] = []
         self._next_id = 0
 
     def _new_id(self) -> int:
         self._next_id += 1
         return self._next_id
 
-    def update(self, detections, frame_shape) -> list[Track]:
+    def update(self, detections, frame_shape) -> List[Track]:
         H, W = frame_shape[:2]
         boxes = np.array([[d.x1, d.y1, d.x2, d.y2] for d in detections], dtype=np.float32).reshape(-1, 4)
         scores = np.array([d.score for d in detections], dtype=np.float32).reshape(-1)
@@ -140,7 +140,7 @@ class ByteTracker(Tracker):
         cost = 1.0 - _ious([t.xyxy for t in pool], [d.xyxy for d in dets_hi])
         matches, u_track, u_det = _match(cost, self.match_thresh)
 
-        activated: list[_STrack] = []
+        activated: List[_STrack] = []
         for it, idet in matches:
             t = pool[it]
             t.update(dets_hi[idet].xyxy, dets_hi[idet].score)
@@ -157,7 +157,7 @@ class ByteTracker(Tracker):
             activated.append(t)
 
         # --- new tracks from leftover high-conf dets ---
-        new_tracks: list[_STrack] = []
+        new_tracks: List[_STrack] = []
         for idet in u_det:
             d = dets_hi[idet]
             d.activate(self._new_id())
@@ -177,7 +177,7 @@ class ByteTracker(Tracker):
         self._tracked = new_tracked
         self._lost = new_lost
 
-        out: list[Track] = []
+        out: List[Track] = []
         for t in self._tracked:
             x1 = float(np.clip(t.xyxy[0], 0, W - 1)); y1 = float(np.clip(t.xyxy[1], 0, H - 1))
             x2 = float(np.clip(t.xyxy[2], 0, W - 1)); y2 = float(np.clip(t.xyxy[3], 0, H - 1))

@@ -1,4 +1,7 @@
 # --- runtime (laptop dev) ---
+# Code targets Python 3.6 (JetPack 4.x) — no `from __future__ import annotations`, no
+# list[...]/X|None hints. Jetson install steps: docs/JETSON.md + requirements-jetson.txt.
+dataclasses; python_version < "3.7"   # stdlib from 3.7; pure-Python backport for the Jetson's 3.6
 numpy
 PyYAML
 opencv-python           # laptop only. On Jetson use the JetPack system cv2 (built with GStreamer/CUDA); do NOT pip-install this there.

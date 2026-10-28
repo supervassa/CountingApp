@@ -2,11 +2,11 @@
 
 One Tracker instance PER camera (state is per-camera); the detector is shared.
 """
-from __future__ import annotations
 
 import abc
 from collections import deque
 from dataclasses import dataclass, field
+from typing import List, Tuple
 
 import numpy as np
 
@@ -26,19 +26,19 @@ class Track:
     trajectory: deque = field(default_factory=lambda: deque(maxlen=64))
 
     @property
-    def xyxy(self) -> tuple[int, int, int, int]:
+    def xyxy(self) -> Tuple[int, int, int, int]:
         return int(self.x1), int(self.y1), int(self.x2), int(self.y2)
 
     @property
-    def anchor_head(self) -> tuple[float, float]:
+    def anchor_head(self) -> Tuple[float, float]:
         return (self.x1 + self.x2) / 2, self.y1
 
     @property
-    def anchor_centroid(self) -> tuple[float, float]:
+    def anchor_centroid(self) -> Tuple[float, float]:
         return (self.x1 + self.x2) / 2, (self.y1 + self.y2) / 2
 
 
 class Tracker(abc.ABC):
     @abc.abstractmethod
-    def update(self, detections, frame_shape: tuple[int, int]) -> list[Track]:
+    def update(self, detections, frame_shape: Tuple[int, int]) -> List[Track]:
         """detections: list[app.detection.base.Detection]; returns active tracks."""

@@ -2,7 +2,6 @@
 
 Run: python tests/test_database.py   (or pytest)
 """
-from __future__ import annotations
 
 import sys
 import tempfile

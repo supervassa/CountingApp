@@ -1,5 +1,4 @@
 """Build a per-camera Tracker from config."""
-from __future__ import annotations
 
 from .base import Tracker
 from .bytetrack import ByteTracker

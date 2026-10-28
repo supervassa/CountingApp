@@ -1,5 +1,4 @@
 """Build a CameraSource from a camera config node."""
-from __future__ import annotations
 
 from .base import CameraSource
 from .csi import CsiSource

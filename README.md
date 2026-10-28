@@ -59,7 +59,10 @@ operational is hard-coded.
 
 ## Status
 
-Capaian 0, 1, 2, 3, 5, 6, 7, 9 are built and tested (27 tests, `main.py --check` OK).
+Capaian 0, 1, 2, 3, 5, 6, 7, 9 are built and tested (35 tests, green on Python 3.9 and 3.8).
+The code targets the Jetson's Python 3.6 (no `from __future__ import annotations`, no `list[...]` / `X | None`
+hints, no SQLite upsert syntax) but has **not yet run on a real Jetson** — start with
+[docs/JETSON.md](docs/JETSON.md) and `scripts/jetson_check.py`.
 The remaining ones need physical hardware:
 
 - **1b lens calibration** — once the cameras are mounted: capture a checkerboard,
@@ -88,6 +91,8 @@ per person, selfie domain) — kept only as a potential impostor pool for FAR te
 ```
 main.py                 entry point (run | --check | --summary)
 config/config.yaml      all runtime tuning (cameras, band lines, thresholds, personnel_db)
+config/jetson.yaml      overlay for the Jetson: python main.py -c config/config.yaml -c config/jetson.yaml
+requirements-jetson.txt Python 3.6 / aarch64 pins;  docs/JETSON.md = bring-up guide
 app/
   config.py             load + validate yaml
   logging_setup.py
@@ -101,5 +106,6 @@ app/
 scripts/
   ingest_raw.py         legacy dataset audit
   export_yolo.py        yolov8n.pt -> ONNX (one-time)
-tests/                  config, bytetrack, counting, crosscheck, database  (27 tests)
+  jetson_check.py       Jetson readiness: platform, libs, CSI cameras, YOLO speed (py3.6-safe)
+tests/                  config, bytetrack, nms, counting, crosscheck, database  (35 tests)
 ```

@@ -12,13 +12,13 @@ Guards: idpersonal must be a UUID; info_function must be a bare
 schema.function identifier; short timeout; failures are logged and retried
 next tick (simple circuit-breaker via consecutive-failure backoff).
 """
-from __future__ import annotations
 
 import logging
 import re
 import threading
 import time
 from uuid import UUID
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def _is_uuid(s: str) -> bool:
 
 
 class PersonnelSource:
-    def get_info(self, idpersonal: str) -> dict | None:  # pragma: no cover - interface
+    def get_info(self, idpersonal: str) -> Optional[dict]:  # pragma: no cover - interface
         raise NotImplementedError
 
     def close(self):
@@ -42,7 +42,7 @@ class PersonnelSource:
 
 
 class NullPersonnelSource(PersonnelSource):
-    def get_info(self, idpersonal: str) -> dict | None:
+    def get_info(self, idpersonal: str) -> Optional[dict]:
         return None
 
 
@@ -59,7 +59,7 @@ class PgPersonnelSource(PersonnelSource):
         self._fn = info_function
         self._timeout = connect_timeout_s
 
-    def get_info(self, idpersonal: str) -> dict | None:
+    def get_info(self, idpersonal: str) -> Optional[dict]:
         if not _is_uuid(idpersonal):
             log.warning("skip non-UUID idpersonal: %r", idpersonal)
             return None
@@ -93,7 +93,7 @@ class EnrichmentWorker:
         self.source = source
         self.interval_s = float(interval_s)
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._thread: Optional[threading.Thread] = None
         self._fails = 0
 
     def tick(self) -> int:

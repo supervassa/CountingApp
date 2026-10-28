@@ -1,5 +1,4 @@
 """Build the Repository + EnrichmentWorker from config."""
-from __future__ import annotations
 
 import os
 

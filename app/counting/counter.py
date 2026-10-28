@@ -8,10 +8,10 @@ is an IN crossing, INSIDE->OUTSIDE is an OUT crossing. Guards:
   - direction filter: cam_out emits IN only, cam_in emits OUT only
 A track first seen already INSIDE/OUTSIDE just seeds last_solid — no event.
 """
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 from .band import Band, BAND, INSIDE, OUTSIDE
 
@@ -25,16 +25,16 @@ class CrossEvent:
     track_id: int
     ts: float
     identity: str = "UNKNOWN"
-    idpersonal: str | None = None
-    similarity: float | None = None
+    idpersonal: Optional[str] = None
+    similarity: Optional[float] = None
 
 
 class _TrackState:
     __slots__ = ("last_solid", "cand_zone", "cand_count", "last_event_ts")
 
     def __init__(self):
-        self.last_solid: str | None = None
-        self.cand_zone: str | None = None
+        self.last_solid: Optional[str] = None
+        self.cand_zone: Optional[str] = None
         self.cand_count = 0
         self.last_event_ts = float("-inf")
 
@@ -50,13 +50,13 @@ class CrossingCounter:
         self.min_track_len = int(min_track_len)
         self.confirm_frames = int(confirm_frames)
         self.cooldown_s = float(cooldown_s)
-        self._st: dict[int, _TrackState] = {}
+        self._st: Dict[int, _TrackState] = {}
 
     def _point(self, track):
         return track.anchor_head if self.anchor == "head" else track.anchor_centroid
 
-    def update(self, tracks, frame_shape, ts: float) -> list[CrossEvent]:
-        events: list[CrossEvent] = []
+    def update(self, tracks, frame_shape, ts: float) -> List[CrossEvent]:
+        events: List[CrossEvent] = []
         live = {t.track_id for t in tracks}
         for dead in [tid for tid in self._st if tid not in live]:
             del self._st[dead]

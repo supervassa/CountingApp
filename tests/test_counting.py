@@ -5,7 +5,6 @@ direction filter, per-track cooldown (not global), and min_track_len.
 
 Run: python tests/test_counting.py   (or pytest)
 """
-from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -87,6 +86,26 @@ def test_min_track_len_gate():
     c = CrossingCounter("cam_out", "in", _band(), confirm_frames=3, min_track_len=50)
     ys = [100] * 4 + [200, 280, 360, 440] + [520] * 4
     assert _walk(c, 1, ys) == []   # track never old enough
+
+
+def test_default_config_bands_match_physical_layout():
+    """Both cameras face the approach to the door, so someone heading for the door
+    walks DOWN the frame: that is IN on cam_out and OUT on cam_in. Walking up the
+    frame (away from the door) is the reverse and each camera must ignore it."""
+    from app.config import load_config
+    from app.counting.factory import build_counter
+    cfg = load_config(str(Path(__file__).resolve().parents[1] / "config" / "config.yaml"))
+    down = [100] * 4 + [200, 280, 360, 440] + [520] * 4
+    up = list(reversed(down))
+
+    def run(cam, role, ys):
+        c = build_counter(cfg.counting, cam, role)
+        return [e.direction for e in _walk(c, 1, ys)]
+
+    assert run("cam_out", "in", down) == ["IN"]
+    assert run("cam_out", "in", up) == []            # leaving past cam_out: its filter drops it
+    assert run("cam_in", "out", down) == ["OUT"]
+    assert run("cam_in", "out", up) == []            # entering past cam_in: its filter drops it
 
 
 def test_occupancy_dedup_known_person_only():

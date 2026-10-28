@@ -5,7 +5,6 @@ State (8): x, y, a, h, vx, vy, va, vh
 
 Standard SORT / ByteTrack / DeepSORT formulation.
 """
-from __future__ import annotations
 
 import numpy as np
 import scipy.linalg

@@ -2,22 +2,22 @@
 """Entry point.
 
   python main.py                      # run the pipeline (uses config/config.yaml)
-  python main.py -c config/dev.yaml
+  python main.py -c config/config.yaml -c config/jetson.yaml   # base + overlay (later files win)
   python main.py --check              # load+validate config, then exit
   python main.py --summary [DATE]     # print the daily people-flow summary (default: today)
 """
-from __future__ import annotations
 
 import argparse
 import logging
 import sys
 from datetime import datetime
+from typing import Optional
 
 from app.config import load_config
 from app.logging_setup import setup_logging
 
 
-def _print_summary(cfg, date: str | None) -> int:
+def _print_summary(cfg, date: Optional[str]) -> int:
     from app.database.factory import build_repository
 
     repo = build_repository(cfg.database)
@@ -57,14 +57,16 @@ def _print_summary(cfg, date: str | None) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-c", "--config", default="config/config.yaml")
+    ap.add_argument("-c", "--config", action="append", metavar="YAML",
+                    help="config file; repeat to overlay (first = base, later files override)")
     ap.add_argument("--check", action="store_true", help="validate config and exit")
     ap.add_argument("--summary", nargs="?", const="", metavar="DATE",
                     help="print the daily summary (YYYY-MM-DD; default today) and exit")
     a = ap.parse_args()
 
     try:
-        cfg = load_config(a.config)
+        base, *overlays = a.config or ["config/config.yaml"]
+        cfg = load_config(base, *overlays)
     except (FileNotFoundError, KeyError, ValueError) as e:
         print(f"config error: {e}", file=sys.stderr)
         return 2

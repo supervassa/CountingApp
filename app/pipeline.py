@@ -4,12 +4,12 @@ Recognition / counting hang off process_frame() in later capaian.
 The Detector is shared across both cameras (§5.3 PRD); each camera keeps its
 own Tracker (state is per-camera).
 """
-from __future__ import annotations
 
 import logging
 import signal
 import time
 from datetime import datetime
+from typing import List
 
 import cv2
 
@@ -33,7 +33,7 @@ def _color(tid: int):
 class FpsMeter:
     def __init__(self, window: int = 30):
         self.window = window
-        self._t: list[float] = []
+        self._t: List[float] = []
 
     def tick(self) -> float:
         now = time.time()

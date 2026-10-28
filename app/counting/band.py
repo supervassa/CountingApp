@@ -4,7 +4,6 @@ Config gives each line as (x1, y1, x2, y2) in frame fractions. The axis from
 the outer-line midpoint to the inner-line midpoint defines OUTSIDE -> INSIDE
 progress, so the band works horizontal, vertical or diagonal.
 """
-from __future__ import annotations
 
 from enum import Enum
 

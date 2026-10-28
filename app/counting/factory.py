@@ -1,5 +1,4 @@
 """Build per-camera CrossingCounter + the shared Occupancy / CrossCheck from config."""
-from __future__ import annotations
 
 from .band import Band
 from .counter import CrossingCounter

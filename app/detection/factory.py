@@ -1,5 +1,4 @@
 """Build the shared Detector from config."""
-from __future__ import annotations
 
 from .base import Detector
 from .yolo_onnx import YoloOnnxDetector

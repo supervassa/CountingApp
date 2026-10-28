@@ -3,13 +3,13 @@
 The capture loop only writes events + occupancy_state here (fast, local). Name
 resolution is done out-of-band by EnrichmentWorker into persons_cache.
 """
-from __future__ import annotations
 
 import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 _SCHEMA = Path(__file__).with_name("schema.sql")
@@ -38,8 +38,8 @@ class Repository:
             pass
 
     # --- events ---
-    def insert_event(self, ev, *, ts: datetime | None = None,
-                     all_scores=None, image_path: str | None = None) -> int:
+    def insert_event(self, ev, *, ts: Optional[datetime] = None,
+                     all_scores=None, image_path: Optional[str] = None) -> int:
         when = (ts or datetime.now()).astimezone()
         row = (
             ev.idpersonal, ev.identity, ev.direction, ev.camera_id,
@@ -57,12 +57,12 @@ class Repository:
         return cur.lastrowid
 
     # --- occupancy_state (survives restart) ---
-    def set_inside(self, key: str, idpersonal: str | None, entered_at_iso: str | None = None):
+    def set_inside(self, key: str, idpersonal: Optional[str], entered_at_iso: Optional[str] = None):
+        # INSERT OR REPLACE, not ON CONFLICT DO UPDATE: the upsert syntax needs
+        # SQLite >= 3.24 and JetPack 4.x (Ubuntu 18.04) ships 3.22.
         self.conn.execute(
-            """INSERT INTO occupancy_state (key, idpersonal, entered_at, last_event)
-               VALUES (?,?,?, 'IN')
-               ON CONFLICT(key) DO UPDATE SET idpersonal=excluded.idpersonal,
-                   entered_at=excluded.entered_at, last_event='IN'""",
+            """INSERT OR REPLACE INTO occupancy_state (key, idpersonal, entered_at, last_event)
+               VALUES (?,?,?, 'IN')""",
             (key, idpersonal, entered_at_iso or _now_iso()))
         self.conn.commit()
 
@@ -70,12 +70,12 @@ class Repository:
         self.conn.execute("DELETE FROM occupancy_state WHERE key = ?", (key,))
         self.conn.commit()
 
-    def inside_keys(self) -> list[tuple[str, str]]:
+    def inside_keys(self) -> List[Tuple[str, str]]:
         rows = self.conn.execute(
             "SELECT key, entered_at FROM occupancy_state").fetchall()
         return [(r["key"], r["entered_at"]) for r in rows]
 
-    def anomalies(self) -> list[dict]:
+    def anomalies(self) -> List[dict]:
         """Everyone still marked inside — an exit that was never seen, or someone
         who stayed. Names filled from persons_cache when known."""
         rows = self.conn.execute(
@@ -92,7 +92,7 @@ class Repository:
         return {"total": len(rows), "known": known, "unknown": len(rows) - known}
 
     # --- reporting ---
-    def daily_summary(self, date: str | None = None) -> list[dict]:
+    def daily_summary(self, date: Optional[str] = None) -> List[dict]:
         date = date or datetime.now().strftime("%Y-%m-%d")
         rows = self.conn.execute(
             """SELECT e.identity, e.idpersonal,
@@ -120,23 +120,21 @@ class Repository:
         return out
 
     # --- persons_cache (written by EnrichmentWorker) ---
-    def unresolved_idpersonals(self) -> list[str]:
+    def unresolved_idpersonals(self) -> List[str]:
         rows = self.conn.execute(
             """SELECT DISTINCT e.idpersonal FROM events e
                LEFT JOIN persons_cache pc ON pc.idpersonal = e.idpersonal
                WHERE e.idpersonal IS NOT NULL AND pc.idpersonal IS NULL""").fetchall()
         return [r["idpersonal"] for r in rows]
 
-    def upsert_person_cache(self, idpersonal: str, name: str | None, info: dict | None):
+    def upsert_person_cache(self, idpersonal: str, name: Optional[str], info: Optional[dict]):
         self.conn.execute(
-            """INSERT INTO persons_cache (idpersonal, name, info_json, fetched_at)
-               VALUES (?,?,?,?)
-               ON CONFLICT(idpersonal) DO UPDATE SET name=excluded.name,
-                   info_json=excluded.info_json, fetched_at=excluded.fetched_at""",
+            """INSERT OR REPLACE INTO persons_cache (idpersonal, name, info_json, fetched_at)
+               VALUES (?,?,?,?)""",
             (idpersonal, name, json.dumps(info) if info is not None else None, _now_iso()))
         self.conn.commit()
 
-    def person_name(self, idpersonal: str) -> str | None:
+    def person_name(self, idpersonal: str) -> Optional[str]:
         r = self.conn.execute(
             "SELECT name FROM persons_cache WHERE idpersonal = ?", (idpersonal,)).fetchone()
         return r["name"] if r else None
@@ -150,7 +148,7 @@ class Repository:
         self.conn.commit()
         return cur.lastrowid
 
-    def alarms_on(self, date: str | None = None) -> list[dict]:
+    def alarms_on(self, date: Optional[str] = None) -> List[dict]:
         date = date or datetime.now().strftime("%Y-%m-%d")
         rows = self.conn.execute(
             "SELECT ts, kind, detail FROM alarms WHERE date = ? ORDER BY ts", (date,)).fetchall()

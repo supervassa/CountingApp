@@ -3,9 +3,9 @@
 Tegra-only. On a laptop this import path is never taken (factory picks webcam/file).
 The pipeline hands OpenCV BGR frames through appsink.
 """
-from __future__ import annotations
 
 import logging
+from typing import Optional
 
 import cv2
 
@@ -31,7 +31,7 @@ class CsiSource(CameraSource):
         super().__init__(cam_id)
         self.sensor_id, self.width, self.height = sensor_id, width, height
         self.fps, self.flip_method = fps, flip_method
-        self._cap: cv2.VideoCapture | None = None
+        self._cap: Optional[cv2.VideoCapture] = None
 
     def open(self) -> None:
         pipe = gst_pipeline(self.sensor_id, self.width, self.height, self.fps, self.flip_method)
@@ -45,7 +45,7 @@ class CsiSource(CameraSource):
         log.info("[%s] CSI sensor-id=%d opened %dx%d@%d", self.cam_id,
                  self.sensor_id, self.width, self.height, self.fps)
 
-    def read(self) -> Frame | None:
+    def read(self) -> Optional[Frame]:
         if not self._cap:
             return None
         ok, img = self._cap.read()

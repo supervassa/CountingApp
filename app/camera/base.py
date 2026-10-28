@@ -4,11 +4,11 @@ came from a webcam, a video file, or an IMX219 on the CSI bus.
 Contract: read() returns a Frame or None (transient failure -> caller may retry;
 persistent failure -> is_open() goes False).
 """
-from __future__ import annotations
 
 import abc
 import time
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -30,7 +30,7 @@ class CameraSource(abc.ABC):
     def open(self) -> None: ...
 
     @abc.abstractmethod
-    def read(self) -> Frame | None: ...
+    def read(self) -> Optional[Frame]: ...
 
     @abc.abstractmethod
     def is_open(self) -> bool: ...

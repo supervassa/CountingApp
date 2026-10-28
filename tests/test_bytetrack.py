@@ -6,7 +6,6 @@ stability through separation, a crossing (boxes overlap), a short gap
 
 Run: python tests/test_bytetrack.py   (or pytest)
 """
-from __future__ import annotations
 
 import sys
 from pathlib import Path

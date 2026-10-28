@@ -10,9 +10,9 @@ cam_out only emits IN, cam_in only emits OUT, so the running occupancy is
 
 Alarms are rate-limited per kind and handed to a sink (SQLite + WARNING log).
 """
-from __future__ import annotations
 
 import logging
+from typing import Dict
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class CrossCheck:
         self.silent_alarm_s = float(silent_alarm_s)
         self.realarm_s = float(realarm_s)
         self.last_event_ts = {"cam_out": None, "cam_in": None}
-        self._last_alarm_ts: dict[str, float] = {}
+        self._last_alarm_ts: Dict[str, float] = {}
 
     def _raise(self, kind: str, detail: str, now: float):
         prev = self._last_alarm_ts.get(kind)
